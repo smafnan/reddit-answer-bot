@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+langgraph
+google-genai
+praw
+qdrant-client
+duckduckgo-search
+pydantic
+python-dotenv
