@@ -93,6 +93,35 @@ def get_report(report_id: str):
                 logger.error(f"Error reading report file {filename}: {e}")
                 
     raise HTTPException(status_code=404, detail="Report not found")
+@app.delete("/api/reports")
+def clear_all_reports():
+    """Deletes all saved reports from the disk."""
+    try:
+        for filename in os.listdir(DATA_DIR):
+            if filename.endswith(".json"):
+                os.remove(os.path.join(DATA_DIR, filename))
+        return {"status": "success", "message": "All reports deleted"}
+    except Exception as e:
+        logger.error(f"Error clearing reports: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/reports/{report_id}")
+def delete_report(report_id: str):
+    """Deletes a single report by its ID."""
+    if not os.path.exists(DATA_DIR):
+        raise HTTPException(status_code=404, detail="Reports directory not found")
+    for filename in os.listdir(DATA_DIR):
+        if filename.endswith(".json"):
+            path = os.path.join(DATA_DIR, filename)
+            try:
+                with open(path, "r") as f:
+                    data = json.load(f)
+                    if data.get("id") == report_id or report_id[:8] in filename:
+                        os.remove(path)
+                        return {"status": "success", "message": f"Report {report_id} deleted"}
+            except Exception as e:
+                logger.error(f"Error reading/deleting report: {e}")
+    raise HTTPException(status_code=404, detail="Report not found")
 
 if __name__ == "__main__":
     import uvicorn

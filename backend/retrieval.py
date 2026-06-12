@@ -172,17 +172,74 @@ def search_reddit_via_ddg(query: str, max_results: int = 5) -> List[Dict[str, An
             
     return all_comments
 
+def search_reddit_via_old_scraping(query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """Search Reddit via old.reddit.com scraping (no API keys needed, fallback from master branch)."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    from urllib.parse import quote
+    import requests
+    import re
+    
+    search_url = f"https://old.reddit.com/search?q={quote(query)}&sort=relevance&limit={limit}"
+    results = []
+    
+    logger.info(f"Searching old.reddit.com: {search_url}")
+    try:
+        response = requests.get(search_url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            html = response.text
+            blocks = re.findall(
+                r'<div class=" search-result search-result-link[^"]*"[^>]*>.*?</div>\s*</div>',
+                html, re.DOTALL
+            )
+            for block in blocks[:limit]:
+                title_match = re.search(r'<a\s+href="(https?://[^"]+)"\s+class="search-title[^"]*"[^>]*>(.*?)</a>', block, re.DOTALL)
+                if not title_match:
+                    continue
+                url = title_match.group(1)
+                title = re.sub(r'<[^>]+>', '', title_match.group(2)).strip()
+                title = title.replace("&amp;", "&").replace("&gt;", ">").replace("&lt;", "<").replace("&quot;", '"').replace("&#39;", "'")
+                title = re.sub(r'\s+', ' ', title).strip()
+                
+                body_match = re.search(r'<div class="search-result-body">.*?<div class="md"><p>(.*?)</p>', block, re.DOTALL)
+                body = ""
+                if body_match:
+                    body = re.sub(r'<[^>]+>', '', body_match.group(1))
+                    body = body.replace("&amp;", "&").replace("&gt;", ">").replace("&lt;", "<").replace("&quot;", '"').replace("&#39;", "'")
+                    body = re.sub(r'\s+', ' ', body).strip()
+                    
+                sub_match = re.search(r'/r/(\w+)', url)
+                subreddit = sub_match.group(1) if sub_match else "unknown"
+                
+                results.append({
+                    "post_title": title,
+                    "post_url": url,
+                    "subreddit": subreddit,
+                    "author": "old_scraper",
+                    "ups": 1,
+                    "body": body or "Reddit discussion thread submission.",
+                    "depth": 0,
+                    "created_utc": 0
+                })
+    except Exception as e:
+        logger.error(f"Error scraping old.reddit.com: {e}")
+        
+    return results
+
 def search_reddit_hybrid(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
-    """Tries PRAW search first; falls back to DuckDuckGo search if PRAW fails or is not configured."""
+    """Tries PRAW search first; falls back to combined DuckDuckGo search + old.reddit.com scraping if PRAW fails."""
     comments = []
     try:
         comments = search_reddit_via_praw(query, max_results=max_results)
     except Exception as e:
-        logger.warning(f"PRAW search failed, falling back to DDG: {e}")
+        logger.warning(f"PRAW search failed, falling back to DDG + old.reddit scraping: {e}")
         
     if not comments:
-        logger.info("No comments fetched via PRAW. Using DuckDuckGo fallback.")
-        comments = search_reddit_via_ddg(query, max_results=max_results)
+        logger.info("No comments fetched via PRAW. Running fallback retrievers...")
+        ddg_comments = search_reddit_via_ddg(query, max_results=max_results)
+        old_comments = search_reddit_via_old_scraping(query, limit=max_results)
+        comments = ddg_comments + old_comments
         
     return comments
 

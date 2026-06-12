@@ -7,3 +7,5 @@ qdrant-client
 duckduckgo-search
 pydantic
 python-dotenv
+groq
+

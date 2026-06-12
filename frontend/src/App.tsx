@@ -377,10 +377,52 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'synthesis' | 'perspectives' | 'debates' | 'factchecks' | 'graph' | 'comments'>('synthesis');
   const [error, setError] = useState<string | null>(null);
 
+  // Theme states
+  const [theme, setThemeState] = useState<'dark' | 'light' | 'win98'>(() => {
+    const saved = localStorage.getItem('theme');
+    return (saved === 'dark' || saved === 'light' || saved === 'win98') ? saved : 'dark';
+  });
+
+  const [startMenuOpen, setStartMenuOpen] = useState(false);
+  const [clockTime, setClockTime] = useState('');
+  const [win98Windows, setWin98Windows] = useState({
+    search: true,
+    myComputer: false,
+    recycleBin: false,
+    savedReports: false,
+    about: false,
+  });
+
   // Load queries history on startup
   useEffect(() => {
     loadReports();
   }, []);
+
+  // Set theme attribute
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  // Digital clock timer
+  useEffect(() => {
+    const updateClock = () => {
+      const d = new Date();
+      let hours = d.getHours();
+      const minutes = d.getMinutes().toString().padStart(2, '0');
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12;
+      hours = hours ? hours : 12;
+      setClockTime(`${hours}:${minutes} ${ampm}`);
+    };
+    updateClock();
+    const interval = setInterval(updateClock, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const setTheme = (newTheme: 'dark' | 'light' | 'win98') => {
+    setThemeState(newTheme);
+    localStorage.setItem('theme', newTheme);
+  };
 
   const loadReports = async () => {
     try {
@@ -391,6 +433,36 @@ export default function App() {
       }
     } catch (err) {
       console.error("Failed to load historical reports", err);
+    }
+  };
+
+  const deleteSingleReport = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (window.confirm("Are you sure you want to delete this saved report?")) {
+      try {
+        const res = await fetch(`${API_BASE}/api/reports/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          if (activeReport?.id === id) {
+            setActiveReport(null);
+          }
+          loadReports();
+        }
+      } catch (err) {
+        console.error("Failed to delete report", err);
+      }
+    }
+  };
+
+  const clearAllSavedReports = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/reports`, { method: 'DELETE' });
+      if (res.ok) {
+        setActiveReport(null);
+        loadReports();
+        setWin98Windows(prev => ({ ...prev, recycleBin: false }));
+      }
+    } catch (err) {
+      console.error("Failed to clear reports", err);
     }
   };
 
@@ -407,6 +479,11 @@ export default function App() {
     setActiveReport(null);
     setProgressSteps([]);
     setActiveStep('query_expansion');
+    
+    // In Win98, bring the Report/Stepper window to the front
+    if (theme === 'win98') {
+      setWin98Windows(p => ({ ...p, search: false }));
+    }
 
     const encoded = encodeURIComponent(searchText);
     const eventSource = new EventSource(`${API_BASE}/api/query?q=${encoded}`);
@@ -533,6 +610,425 @@ export default function App() {
     return { status: 'pending', info: null };
   };
 
+  // ----------------- WINDOWS 98 RETRO DESKTOP LAYOUT -----------------
+  if (theme === 'win98') {
+    return (
+      <div className="win98-desktop" style={{ width: '100vw', height: '100vh', background: '#008080', position: 'relative', overflow: 'hidden', userSelect: 'none', boxSizing: 'border-box' }}>
+        
+        {/* Desktop Shortcuts */}
+        <div className="win98-desktop-area" style={{ position: 'absolute', top: 0, left: 0, display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px', zIndex: 1 }}>
+          <div className="win98-shortcut" onClick={() => setWin98Windows(p => ({ ...p, search: true }))}>
+            <div className="win98-shortcut-icon" style={{ fontSize: '32px' }}>🔍</div>
+            <div className="win98-shortcut-label">Search Engine</div>
+          </div>
+          <div className="win98-shortcut" onClick={() => setWin98Windows(p => ({ ...p, savedReports: true }))}>
+            <div className="win98-shortcut-icon" style={{ fontSize: '32px' }}>📂</div>
+            <div className="win98-shortcut-label">Saved Reports</div>
+          </div>
+          <div className="win98-shortcut" onClick={() => setWin98Windows(p => ({ ...p, myComputer: true }))}>
+            <div className="win98-shortcut-icon" style={{ fontSize: '32px' }}>💻</div>
+            <div className="win98-shortcut-label">My Computer</div>
+          </div>
+          <div className="win98-shortcut" onClick={() => setWin98Windows(p => ({ ...p, recycleBin: true }))}>
+            <div className="win98-shortcut-icon" style={{ fontSize: '32px' }}>🗑️</div>
+            <div className="win98-shortcut-label">Recycle Bin</div>
+          </div>
+        </div>
+
+        {/* 1. Search Window */}
+        {win98Windows.search && (
+          <div className="glass-panel" style={{ position: 'absolute', top: '10%', left: '120px', width: '450px', zIndex: 10 }}>
+            <div className="win98-frame-title">
+              <span>Reddit Intelligence Search</span>
+              <div className="win98-frame-btns">
+                <div className="win98-frame-btn">_</div>
+                <div className="win98-frame-btn">□</div>
+                <div className="win98-frame-btn" onClick={() => setWin98Windows(p => ({ ...p, search: false }))}>X</div>
+              </div>
+            </div>
+            <div>
+              <p style={{ margin: '0 0 12px 0', fontSize: '11px', color: '#000' }}>
+                Separate useful community knowledge from spam, bots, and hearsay. Run agentic multi-stage filters to build synthesis reports.
+              </p>
+              <form onSubmit={handleSearchSubmit} className="search-form">
+                <div className="search-input-wrapper">
+                  <input
+                    type="text"
+                    className="search-input"
+                    placeholder="Ask a question..."
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                  />
+                  <button type="submit" className="search-btn">Analyze</button>
+                </div>
+              </form>
+              <div className="presets-container" style={{ marginTop: '12px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                {SEARCH_PRESETS.map((preset, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    className="preset-btn"
+                    onClick={() => {
+                      setQuery(preset);
+                      triggerPipeline(preset);
+                    }}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 2. Saved Investigations Window */}
+        {win98Windows.savedReports && (
+          <div className="glass-panel" style={{ position: 'absolute', top: '15%', left: '180px', width: '380px', zIndex: 11 }}>
+            <div className="win98-frame-title">
+              <span>Saved Investigations</span>
+              <div className="win98-frame-btns">
+                <div className="win98-frame-btn">_</div>
+                <div className="win98-frame-btn">□</div>
+                <div className="win98-frame-btn" onClick={() => setWin98Windows(p => ({ ...p, savedReports: false }))}>X</div>
+              </div>
+            </div>
+            <div style={{ maxHeight: '280px', overflowY: 'auto', background: '#fff', border: '2px solid #808080', padding: '4px' }}>
+              {reports.length === 0 ? (
+                <div style={{ padding: '8px', fontSize: '11px', color: '#666' }}>No recent saved reports found.</div>
+              ) : (
+                reports.map((r) => (
+                  <div
+                    key={r.id}
+                    onClick={() => {
+                      selectReport(r.id);
+                    }}
+                    style={{
+                      padding: '6px',
+                      borderBottom: '1px solid #e0e0e0',
+                      cursor: 'pointer',
+                      fontSize: '11px',
+                      color: '#000',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#000080' + '15'}
+                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                  >
+                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '75%' }}>
+                      <div style={{ fontWeight: 'bold' }}>{r.query}</div>
+                      <div style={{ fontSize: '9px', color: '#555' }}>Score: {Math.round(r.confidence_score * 100)}% | {formatTimestamp(r.timestamp)}</div>
+                    </div>
+                    <button
+                      onClick={(e) => deleteSingleReport(r.id, e)}
+                      style={{
+                        background: '#c0c0c0',
+                        border: '1.5px solid',
+                        borderColor: '#fff #808080 #808080 #fff',
+                        padding: '1px 6px',
+                        fontSize: '9px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 3. Report Window (stepper or results) */}
+        {(running || activeReport) && (
+          <div className="glass-panel" style={{ position: 'absolute', top: '5%', left: '30%', width: '68%', height: '82%', zIndex: 12, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            <div className="win98-frame-title">
+              <span>{running ? `Running Analysis: ${query}` : `Report: ${activeReport?.query}`}</span>
+              <div className="win98-frame-btns">
+                <div className="win98-frame-btn">_</div>
+                <div className="win98-frame-btn">□</div>
+                <div className="win98-frame-btn" onClick={() => {
+                  setRunning(false);
+                  setActiveReport(null);
+                }}>X</div>
+              </div>
+            </div>
+            
+            <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px' }}>
+              {running ? (
+                /* Stepper progress */
+                <div className="stepper-container" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {PIPELINE_NODES.map((node) => {
+                    const { status, info } = getStepStatus(node.key);
+                    return (
+                      <div key={node.key} className={`step-item ${status}`} style={{ display: 'flex', gap: '12px', borderBottom: '1px solid #808080', paddingBottom: '6px' }}>
+                        <div className="step-node" style={{ fontWeight: 'bold', minWidth: '24px' }}>
+                          {status === 'completed' && "✓"}
+                          {status === 'active' && "»"}
+                          {status === 'pending' && " "}
+                        </div>
+                        <div className="step-content">
+                          <div className="step-title" style={{ fontWeight: 'bold' }}>{node.label}</div>
+                          <div className="step-desc" style={{ fontSize: '10px' }}>
+                            {status === 'active' || status === 'completed' 
+                              ? (info?.details || info?.message || node.desc) 
+                              : node.desc}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* Report content */
+                activeReport && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div style={{ background: '#e0e0e0', border: '1px solid #808080', padding: '8px' }}>
+                      <h4 style={{ margin: '0 0 4px 0', color: '#000080', fontSize: '12px' }}>Community Consensus</h4>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#000' }}>{activeReport.synthesis.consensus_summary}</p>
+                      <div style={{ marginTop: '6px', fontSize: '10px', fontWeight: 'bold', color: '#000080' }}>
+                        Confidence Level: {Math.round(activeReport.synthesis.confidence_score * 100)}%
+                      </div>
+                    </div>
+
+                    <nav className="tabs-nav" style={{ display: 'flex', gap: '2px', borderBottom: '1px solid #808080', paddingBottom: '2px' }}>
+                      {['synthesis', 'perspectives', 'debates', 'factchecks', 'graph', 'comments'].map((tab) => (
+                        <button
+                          key={tab}
+                          className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
+                          onClick={() => setActiveTab(tab as any)}
+                          style={{ fontSize: '10px', padding: '2px 8px', cursor: 'pointer' }}
+                        >
+                          {tab.toUpperCase()}
+                        </button>
+                      ))}
+                    </nav>
+
+                    <div className="tab-body" style={{ background: '#ffffff', border: '2px solid #808080', padding: '12px', minHeight: '260px', color: '#000' }}>
+                      {activeTab === 'synthesis' && renderMarkdownText(activeReport.synthesis.detailed_synthesis)}
+                      
+                      {activeTab === 'perspectives' && (
+                        <div className="perspectives-container">
+                          {activeReport.perspectives.map((p, idx) => (
+                            <div key={idx} style={{ border: '1px solid #808080', background: '#c0c0c0', padding: '6px', marginBottom: '8px' }}>
+                              <h5 style={{ margin: '0 0 2px 0', color: '#000080', fontSize: '11px' }}>{p.name}</h5>
+                              <p style={{ margin: '0 0 4px 0', fontSize: '10px' }}>{p.consensus}</p>
+                              <ul style={{ margin: 0, paddingLeft: '16px', fontSize: '10px' }}>
+                                {p.supporting_points.map((pt, pIdx) => <li key={pIdx}>{pt}</li>)}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {activeTab === 'debates' && (
+                        <div className="contradictions-container">
+                          {activeReport.contradictions.length === 0 ? (
+                            <p style={{ fontSize: '11px' }}>✓ High level of agreement. No major disputes flagged.</p>
+                          ) : (
+                            activeReport.contradictions.map((c, idx) => (
+                              <div key={idx} style={{ border: '1px solid #808080', background: '#c0c0c0', padding: '6px', marginBottom: '6px', fontSize: '11px' }}>
+                                <strong>Disputed Item #{idx + 1}:</strong> {c}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+
+                      {activeTab === 'factchecks' && (
+                        <div className="factchecks-container">
+                          {activeReport.facts_checked.map((f, idx) => (
+                            <div key={idx} style={{ border: '1px solid #808080', background: '#c0c0c0', padding: '6px', marginBottom: '6px', fontSize: '11px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold' }}>
+                                <span>{f.claim}</span>
+                                <span style={{ color: f.status === 'Verified' ? '#008000' : '#800000' }}>{f.status}</span>
+                              </div>
+                              <p style={{ margin: '4px 0 0 0', fontSize: '10px', color: '#333' }}>{f.explanation}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {activeTab === 'graph' && <ForceGraph graphData={activeReport.knowledge_graph} />}
+
+                      {activeTab === 'comments' && (
+                        <div className="comments-container">
+                          {activeReport.featured_comments.map((comment, idx) => (
+                            <div key={idx} style={{ borderBottom: '1px solid #808080', paddingBottom: '6px', marginBottom: '6px', fontSize: '10px' }}>
+                              <div style={{ color: '#000080', fontWeight: 'bold' }}>r/{comment.subreddit} • u/{comment.author} ({comment.ups} ups)</div>
+                              <p style={{ margin: '2px 0 0 0' }}>{comment.body}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Source threads links */}
+                    <div>
+                      <div style={{ fontWeight: 'bold', fontSize: '11px', marginBottom: '4px' }}>Source References:</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                        {activeReport.sources.map((s, idx) => (
+                          <a
+                            key={idx}
+                            href={s.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="preset-btn"
+                            style={{ fontSize: '10px', textDecoration: 'none', color: '#000' }}
+                          >
+                            r/{s.subreddit}: {s.title.slice(0, 32)}...
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 4. My Computer Window */}
+        {win98Windows.myComputer && (
+          <div className="glass-panel" style={{ position: 'absolute', top: '25%', left: '200px', width: '360px', zIndex: 13 }}>
+            <div className="win98-frame-title">
+              <span>My Computer - System Info</span>
+              <div className="win98-frame-btns">
+                <div className="win98-frame-btn">_</div>
+                <div className="win98-frame-btn">□</div>
+                <div className="win98-frame-btn" onClick={() => setWin98Windows(p => ({ ...p, myComputer: false }))}>X</div>
+              </div>
+            </div>
+            <div style={{ padding: '4px', fontSize: '11px', color: '#000' }}>
+              <div style={{ fontWeight: 'bold', marginBottom: '6px' }}>System Diagnostics:</div>
+              <ul style={{ margin: 0, paddingLeft: '16px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <li>Host Platform: <strong>macOS Sandbox</strong></li>
+                <li>FastAPI Backend: <span style={{ color: 'green', fontWeight: 'bold' }}>Active (Port 8000)</span></li>
+                <li>Vite UI DevServer: <span style={{ color: 'green', fontWeight: 'bold' }}>Active (Port 5173)</span></li>
+                <li>LLM Routing: <strong>Gemini / Groq Dual Support</strong></li>
+                <li>Search Indexer: <strong>DuckDuckGo LiveFactCheck</strong></li>
+                <li>Reddit Scraping: <strong>Requests-based Fallback Scraper</strong></li>
+                <li>Database Directory: <strong>backend/data/</strong></li>
+                <li>Total Saved Reports: <strong>{reports.length} files</strong></li>
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {/* 5. Recycle Bin Confirmation Window */}
+        {win98Windows.recycleBin && (
+          <div className="glass-panel" style={{ position: 'absolute', top: '30%', left: '250px', width: '320px', zIndex: 14 }}>
+            <div className="win98-frame-title">
+              <span>Confirm Empty Recycle Bin</span>
+              <div className="win98-frame-btns">
+                <div className="win98-frame-btn">_</div>
+                <div className="win98-frame-btn">□</div>
+                <div className="win98-frame-btn" onClick={() => setWin98Windows(p => ({ ...p, recycleBin: false }))}>X</div>
+              </div>
+            </div>
+            <div style={{ textAlign: 'center', padding: '8px' }}>
+              <p style={{ margin: '0 0 12px 0', fontSize: '11px', color: '#000' }}>
+                🗑️ Are you sure you want to empty the Recycle Bin? This will delete all saved reports permanently.
+              </p>
+              <div style={{ display: 'flex', justifyContent: 'center', gap: '8px' }}>
+                <button onClick={clearAllSavedReports} className="preset-btn" style={{ minWidth: '60px' }}>Yes</button>
+                <button onClick={() => setWin98Windows(p => ({ ...p, recycleBin: false }))} className="preset-btn" style={{ minWidth: '60px' }}>No</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 6. About Window */}
+        {win98Windows.about && (
+          <div className="glass-panel" style={{ position: 'absolute', top: '35%', left: '300px', width: '300px', zIndex: 15 }}>
+            <div className="win98-frame-title">
+              <span>About Reddit Intelligence Engine</span>
+              <div className="win98-frame-btns">
+                <div className="win98-frame-btn">_</div>
+                <div className="win98-frame-btn">□</div>
+                <div className="win98-frame-btn" onClick={() => setWin98Windows(p => ({ ...p, about: false }))}>X</div>
+              </div>
+            </div>
+            <div style={{ textAlign: 'center', padding: '6px', fontSize: '11px', color: '#000' }}>
+              <div style={{ fontSize: '24px', marginBottom: '6px' }}>🤖</div>
+              <div style={{ fontWeight: 'bold' }}>Reddit Intelligence Engine</div>
+              <div style={{ color: '#555', marginBottom: '8px' }}>v2.0 (Dual-Engine Merge)</div>
+              <p style={{ margin: '0 0 12px 0', fontSize: '10px' }}>
+                Powered by Gemini & Groq multi-agent Graph orchestrations, live DDG check integration, and hybrid Reddit retrievers.
+              </p>
+              <button onClick={() => setWin98Windows(p => ({ ...p, about: false }))} className="preset-btn" style={{ minWidth: '60px' }}>OK</button>
+            </div>
+          </div>
+        )}
+
+        {/* Error Dialog */}
+        {error && (
+          <div className="glass-panel" style={{ position: 'absolute', top: '40%', left: '320px', width: '320px', zIndex: 20 }}>
+            <div className="win98-frame-title" style={{ background: 'linear-gradient(90deg, #800000, #ff0000)' }}>
+              <span>Connection Error</span>
+              <div className="win98-frame-btns">
+                <div className="win98-frame-btn" onClick={() => setError(null)}>X</div>
+              </div>
+            </div>
+            <div style={{ padding: '8px', fontSize: '11px', color: '#000' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <span style={{ fontSize: '18px' }}>⚠️</span>
+                <span>{error}</span>
+              </div>
+              <div style={{ marginTop: '12px', textAlign: 'right' }}>
+                <button onClick={() => setError(null)} className="preset-btn" style={{ minWidth: '60px' }}>Close</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Start Menu Popup */}
+        {startMenuOpen && (
+          <div className="win98-start-menu">
+            <div className="win98-menu-item" onClick={() => { setWin98Windows(p => ({ ...p, search: true })); setStartMenuOpen(false); }}>🔍 Search Engine</div>
+            <div className="win98-menu-item" onClick={() => { setWin98Windows(p => ({ ...p, savedReports: true })); setStartMenuOpen(false); }}>📂 Saved Reports</div>
+            <div className="win98-menu-item" onClick={() => { setWin98Windows(p => ({ ...p, myComputer: true })); setStartMenuOpen(false); }}>💻 My Computer</div>
+            <div className="win98-menu-item" onClick={() => { setWin98Windows(p => ({ ...p, recycleBin: true })); setStartMenuOpen(false); }}>🗑️ Recycle Bin</div>
+            <div className="win98-menu-divider" />
+            <div style={{ padding: '2px 8px', fontSize: '9px', color: '#808080', fontWeight: 'bold' }}>Switch Theme:</div>
+            <div className="win98-menu-item" style={{ paddingLeft: '20px' }} onClick={() => { setTheme('dark'); setStartMenuOpen(false); }}>Dark Mode</div>
+            <div className="win98-menu-item" style={{ paddingLeft: '20px' }} onClick={() => { setTheme('light'); setStartMenuOpen(false); }}>Light Mode</div>
+            <div className="win98-menu-item" style={{ paddingLeft: '20px' }} onClick={() => { setTheme('win98'); setStartMenuOpen(false); }}>Windows 98</div>
+            <div className="win98-menu-divider" />
+            <div className="win98-menu-item" onClick={() => { setWin98Windows(p => ({ ...p, about: true })); setStartMenuOpen(false); }}>ℹ️ About System</div>
+            <div className="win98-menu-item" onClick={() => { setTheme('dark'); setStartMenuOpen(false); }}>🛑 Shut Down</div>
+          </div>
+        )}
+
+        {/* Taskbar */}
+        <div className="win98-taskbar">
+          <button className="win98-start-button" onClick={() => setStartMenuOpen(!startMenuOpen)}>
+            <span style={{ fontSize: '13px' }}>💻</span> Start
+          </button>
+          
+          <div className="win98-taskbar-divider" />
+          
+          <button className={`win98-start-button ${win98Windows.search ? 'active' : ''}`} onClick={() => setWin98Windows(p => ({ ...p, search: !p.search }))} style={{ fontWeight: 'normal', fontSize: '10px' }}>
+            🔍 Search
+          </button>
+          <button className={`win98-start-button ${win98Windows.savedReports ? 'active' : ''}`} onClick={() => setWin98Windows(p => ({ ...p, savedReports: !p.savedReports }))} style={{ fontWeight: 'normal', fontSize: '10px' }}>
+            📂 Reports
+          </button>
+          
+          {(running || activeReport) && (
+            <div className="win98-task-item" style={{ fontSize: '10px', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              📊 {running ? 'Running...' : activeReport?.query}
+            </div>
+          )}
+          
+          <div className="win98-clock">{clockTime}</div>
+        </div>
+
+      </div>
+    );
+  }
+
+  // ----------------- STANDARD MODERN LAYOUT (DARK/LIGHT) -----------------
   return (
     <div className="app-container">
       {/* Background Neon Glows */}
@@ -567,19 +1063,64 @@ export default function App() {
                 key={report.id}
                 className={`report-item ${activeReport?.id === report.id ? 'active' : ''}`}
                 onClick={() => selectReport(report.id)}
+                style={{ position: 'relative', paddingRight: '36px' }}
               >
                 <span className="report-item-query">{report.query}</span>
                 <div className="report-item-meta">
                   <span>Score: {Math.round(report.confidence_score * 100)}%</span>
                   <span>{formatTimestamp(report.timestamp)}</span>
                 </div>
+                <button
+                  onClick={(e) => deleteSingleReport(report.id, e)}
+                  title="Delete Report"
+                  style={{
+                    position: 'absolute',
+                    top: '50%',
+                    right: '12px',
+                    transform: 'translateY(-50%)',
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    cursor: 'pointer',
+                    padding: '4px',
+                    fontSize: '0.85rem',
+                    transition: 'color 0.2s',
+                    zIndex: 10,
+                  }}
+                  onMouseEnter={(e) => e.currentTarget.style.color = 'var(--color-danger)'}
+                  onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-muted)'}
+                >
+                  ✕
+                </button>
               </div>
             ))
           )}
         </div>
 
-        <footer className="sidebar-footer">
-          <span>Engine Status: Operational (Simulated fallback active)</span>
+        <footer className="sidebar-footer" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div>Engine Status: Operational (Simulated fallback active)</div>
+          
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', borderTop: '1px solid var(--border-standard)', paddingTop: '10px' }}>
+            <span>Theme:</span>
+            <select
+              value={theme}
+              onChange={(e) => setTheme(e.target.value as any)}
+              style={{
+                background: 'var(--bg-panel)',
+                color: 'var(--text-bright)',
+                border: '1px solid var(--border-standard)',
+                borderRadius: '4px',
+                padding: '4px 8px',
+                fontSize: '0.75rem',
+                cursor: 'pointer',
+                outline: 'none',
+              }}
+            >
+              <option value="dark">Dark Mode</option>
+              <option value="light">Light Mode</option>
+              <option value="win98">Windows 98</option>
+            </select>
+          </div>
         </footer>
       </aside>
 
@@ -964,3 +1505,4 @@ export default function App() {
     </div>
   );
 }
+

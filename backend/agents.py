@@ -25,20 +25,33 @@ try:
         gemini_client = genai.Client(api_key=api_key)
         logger.info("Initialized Google GenAI client successfully.")
     else:
-        logger.warning("No GEMINI_API_KEY or GOOGLE_API_KEY found. Agent will operate in SIMULATED mode.")
+        logger.warning("No GEMINI_API_KEY or GOOGLE_API_KEY found. Checking google-generativeai...")
 except Exception as e:
     logger.warning(f"Could not initialize google-genai client ({e}). Checking google-generativeai...")
-    try:
+
+# Legacy Gemini Client
+try:
+    if not gemini_client:
         import google.generativeai as google_genai_legacy
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if api_key:
             google_genai_legacy.configure(api_key=api_key)
             gemini_client = "legacy"
             logger.info("Initialized legacy google-generativeai client successfully.")
-        else:
-            logger.warning("No GEMINI_API_KEY or GOOGLE_API_KEY found for legacy client.")
-    except Exception as e2:
-        logger.warning(f"Could not initialize legacy client ({e2}). Agent will operate in SIMULATED mode.")
+except Exception as e2:
+    logger.warning(f"Could not initialize legacy client ({e2}).")
+
+# Initialize Groq Client
+groq_client = None
+groq_model = "llama-3.1-8b-instant"
+try:
+    groq_api_key = os.environ.get("GROQ_API_KEY")
+    if groq_api_key:
+        from groq import Groq
+        groq_client = Groq(api_key=groq_api_key)
+        logger.info("Initialized Groq client successfully.")
+except Exception as e:
+    logger.warning(f"Could not initialize Groq client: {e}")
 
 # --- Models ---
 
@@ -91,40 +104,75 @@ class IntelligenceReport(BaseModel):
     confidence_score: float = Field(description="Confidence score (0.0 to 1.0) based on source strength and agreement.")
     detailed_synthesis: str = Field(description="Thorough markdown-formatted synthesis detailing insights, evidence, and contrary opinions.")
 
-# --- API Caller ---
+# --- API Callers ---
 
-def call_gemini(prompt: str, response_schema: Any = None) -> str:
-    """Helper to call Gemini API using google-genai, legacy SDK, or fallback to simulated data."""
-    if not gemini_client:
-        return get_simulated_response(prompt, response_schema)
-        
+def call_groq(prompt: str, response_schema: Any = None) -> str:
+    """Helper to call Groq API with JSON schema enforcement."""
+    if not groq_client:
+        return "{}"
     try:
-        if gemini_client == "legacy":
-            import google.generativeai as google_genai_legacy
-            model = google_genai_legacy.GenerativeModel(
-                model_name="gemini-1.5-flash",
-                generation_config={"response_mime_type": "application/json"} if response_schema else None
-            )
-            response = model.generate_content(prompt)
-            return response.text
-        else:
-            if response_schema:
-                response = gemini_client.models.generate_content(
-                    model=gemini_model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=response_schema
-                    )
-                )
-            else:
-                response = gemini_client.models.generate_content(
-                    model=gemini_model,
-                    contents=prompt
-                )
-            return response.text
+        system_prompt = "You are a helpful structured JSON assistant."
+        if response_schema:
+            system_prompt += f" You MUST return a JSON object that strictly conforms to this JSON schema: {response_schema.model_json_schema()}"
+            
+        response = groq_client.chat.completions.create(
+            model=groq_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"} if response_schema else None,
+            temperature=0.3
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        logger.error(f"Error calling Gemini API: {e}. Falling back to simulated response.")
+        logger.error(f"Error calling Groq API: {e}")
+        return get_simulated_response(prompt, response_schema)
+
+def call_llm(prompt: str, response_schema: Any = None) -> str:
+    """Helper to call Gemini or Groq API, falling back to simulated data if no key is configured."""
+    has_gemini = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    has_groq = bool(os.environ.get("GROQ_API_KEY"))
+
+    # 1. Try Gemini first if keys are present
+    if has_gemini and gemini_client:
+        try:
+            if gemini_client == "legacy":
+                import google.generativeai as google_genai_legacy
+                model = google_genai_legacy.GenerativeModel(
+                    model_name="gemini-1.5-flash",
+                    generation_config={"response_mime_type": "application/json"} if response_schema else None
+                )
+                response = model.generate_content(prompt)
+                return response.text
+            else:
+                if response_schema:
+                    response = gemini_client.models.generate_content(
+                        model=gemini_model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=response_schema
+                        )
+                    )
+                else:
+                    response = gemini_client.models.generate_content(
+                        model=gemini_model,
+                        contents=prompt
+                    )
+                return response.text
+        except Exception as gemini_err:
+            logger.error(f"Gemini API call failed: {gemini_err}. Attempting Groq fallback...")
+            if has_groq and groq_client:
+                return call_groq(prompt, response_schema)
+            return get_simulated_response(prompt, response_schema)
+
+    # 2. Try Groq if Gemini key is missing but Groq is available
+    elif has_groq and groq_client:
+        return call_groq(prompt, response_schema)
+
+    # 3. Fallback to simulated responses if offline
+    else:
         return get_simulated_response(prompt, response_schema)
 
 # --- Dynamic Simulated Fallbacks ---
@@ -502,7 +550,7 @@ def query_expansion_agent(query: str) -> List[str]:
     """
     
     try:
-        res_text = call_gemini(prompt, response_schema=QueryExpansionOutput)
+        res_text = call_llm(prompt, response_schema=QueryExpansionOutput)
         data = json.loads(res_text)
         return data.get("queries", [query])
     except Exception as e:
@@ -577,7 +625,7 @@ def spam_and_quality_agent(comments: List[Dict[str, Any]]) -> List[Dict[str, Any
     """
     
     try:
-        res_text = call_gemini(prompt, response_schema=BatchCommentEvaluation)
+        res_text = call_llm(prompt, response_schema=BatchCommentEvaluation)
         evals = json.loads(res_text).get("evaluations", [])
         
         # Merge evaluations back
@@ -639,7 +687,7 @@ def perspective_contradiction_agent(query: str, comments: List[Dict[str, Any]]) 
     """
     
     try:
-        res_text = call_gemini(prompt, response_schema=PerspectiveAndContradictionOutput)
+        res_text = call_llm(prompt, response_schema=PerspectiveAndContradictionOutput)
         return json.loads(res_text)
     except Exception as e:
         logger.error(f"Error in perspective_contradiction_agent: {e}")
@@ -667,7 +715,7 @@ def knowledge_graph_agent(query: str, comments: List[Dict[str, Any]]) -> Dict[st
     """
     
     try:
-        res_text = call_gemini(prompt, response_schema=KnowledgeGraphOutput)
+        res_text = call_llm(prompt, response_schema=KnowledgeGraphOutput)
         return json.loads(res_text)
     except Exception as e:
         logger.error(f"Error in knowledge_graph_agent: {e}")
@@ -691,8 +739,8 @@ def fact_checking_agent(query: str, comments: List[Dict[str, Any]]) -> List[Dict
     
     claims = []
     try:
-        if gemini_client:
-            res_text = call_gemini(identify_prompt)
+        if gemini_client or groq_client:
+            res_text = call_llm(identify_prompt)
             # Find JSON block in output
             import re
             match = re.search(r'\[.*\]', res_text.replace('\n', ' '))
@@ -753,8 +801,8 @@ def fact_checking_agent(query: str, comments: List[Dict[str, Any]]) -> List[Dict
         """
         
         try:
-            if gemini_client:
-                res_text = call_gemini(verify_prompt, response_schema=FactCheckClaim)
+            if gemini_client or groq_client:
+                res_text = call_llm(verify_prompt, response_schema=FactCheckClaim)
                 fact_obj = json.loads(res_text)
                 # Ensure the claim string matches the checked claim
                 fact_obj["claim"] = claim
@@ -834,7 +882,7 @@ def consensus_synthesis_agent(
     """
     
     try:
-        res_text = call_gemini(prompt, response_schema=IntelligenceReport)
+        res_text = call_llm(prompt, response_schema=IntelligenceReport)
         return json.loads(res_text)
     except Exception as e:
         logger.error(f"Error in consensus_synthesis_agent: {e}")
