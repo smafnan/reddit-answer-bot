@@ -1,3 +1,4 @@
+import json
 from agents.query_expander import expand_query
 from agents.reddit_retriever import retrieve
 from agents.spam_filter import filter_spam
@@ -9,76 +10,64 @@ from agents.summarizer import summarize_findings
 from agents.fact_check import fact_check
 
 
-def run_pipeline(query: str) -> dict:
-    print(f"\n{'='*60}")
-    print(f"  REDDIT INTELLIGENCE ENGINE")
-    print(f"{'='*60}\n")
-
-    # Agent 1: Query Expansion
-    print("[1/9] Expanding query...")
+def run_pipeline(query: str):
+    yield {"step": "query_expansion", "message": "Expanding query into multiple search angles..."}
     queries = expand_query(query)
-    print(f"       Generated {len(queries)} search queries")
+    yield {"step": "query_expansion", "message": f"Generated {len(queries)} search queries"}
 
-    # Agent 2: Reddit Retrieval
-    print("[2/9] Retrieving from Reddit...")
+    yield {"step": "retrieval", "message": "Retrieving Reddit discussions..."}
     all_posts = []
-    for q in queries[:3]:
+    for q in queries[:4]:
         posts = retrieve(q)
         all_posts.extend(posts)
-    # Deduplicate
+        if len(all_posts) >= 30:
+            break
     seen = set()
     unique_posts = []
     for p in all_posts:
         if p["url"] not in seen:
             seen.add(p["url"])
             unique_posts.append(p)
-    print(f"       Retrieved {len(unique_posts)} unique posts")
+    yield {"step": "retrieval", "message": f"Found {len(unique_posts)} unique posts"}
 
     if not unique_posts:
-        return {"error": "No Reddit posts found"}
+        yield {"step": "failed", "message": "No Reddit posts found", "error": "No posts retrieved"}
+        return
 
-    # Agent 3: Spam Detection
-    print("[3/9] Filtering spam/low-quality...")
+    yield {"step": "spam_filtering", "message": "Filtering spam and low-quality content..."}
     filtered = filter_spam(unique_posts)
-    print(f"       Kept {len(filtered)} posts")
+    yield {"step": "spam_filtering", "message": f"Kept {len(filtered)} quality posts"}
 
     if not filtered:
-        return {"error": "All posts filtered as low quality"}
+        yield {"step": "failed", "message": "All posts filtered as low quality", "error": "No quality posts remain"}
+        return
 
-    # Agent 4: Credibility Scoring
-    print("[4/9] Scoring credibility...")
+    yield {"step": "credibility_scoring", "message": "Scoring credibility of each post..."}
     scored = score_credibility(filtered)
-    print(f"       Top score: {scored[0].get('credibility', 'N/A')}/10")
+    yield {"step": "credibility_scoring", "message": f"Top credibility score: {scored[0].get('credibility', 'N/A')}/10"}
 
-    # Agent 5: Contradiction Detection
-    print("[5/9] Detecting contradictions...")
+    yield {"step": "contradiction_detection", "message": "Detecting contradictions and debates..."}
     contradictions = detect_contradictions(query, scored)
-    if contradictions.get("has_contradictions"):
-        print(f"       Found {len(contradictions.get('viewpoints', []))} different viewpoints")
-    else:
-        print("       No major contradictions found")
+    num_vp = len(contradictions.get("viewpoints", []))
+    yield {"step": "contradiction_detection", "message": f"Found {num_vp} different viewpoints" if num_vp else "No major contradictions found"}
 
-    # Agent 6: Perspective Generation
-    print("[6/9] Generating perspectives...")
+    yield {"step": "perspective_generation", "message": "Generating stakeholder perspectives..."}
     perspectives = generate_perspectives(query)
-    print(f"       Identified {len(perspectives)} stakeholder perspectives")
+    yield {"step": "perspective_generation", "message": f"Identified {len(perspectives)} stakeholder perspectives"}
 
-    # Agent 7: Knowledge Graph
-    print("[7/9] Extracting knowledge graph...")
+    yield {"step": "knowledge_graph", "message": "Extracting knowledge graph entities..."}
     kg = extract_knowledge_graph(scored[:5])
-    print(f"       Found {len(kg.get('entities', []))} entities")
+    yield {"step": "knowledge_graph", "message": f"Found {len(kg.get('nodes', []))} entities, {len(kg.get('edges', []))} relationships"}
 
-    # Agent 8: Summarization
-    print("[8/9] Synthesizing findings...")
+    yield {"step": "synthesis", "message": "Synthesizing all findings into report..."}
     summary = summarize_findings(query, scored, contradictions)
-    print("       Summary created")
+    yield {"step": "synthesis", "message": "Summary created"}
 
-    # Agent 9: Fact Check
-    print("[9/9] Fact-checking...")
-    fact_check_result = fact_check(query, summary)
-    print(f"       Assessment: {fact_check_result.get('overall_assessment', 'N/A')}")
+    yield {"step": "fact_check", "message": "Fact-checking key claims..."}
+    fc = fact_check(query, summary)
+    yield {"step": "fact_check", "message": f"Assessment: {fc.get('overall_assessment', 'N/A')}"}
 
-    return {
+    yield {"step": "completed", "message": "Complete!", "data": {
         "query": query,
         "expanded_queries": queries,
         "scored_posts": scored,
@@ -86,5 +75,5 @@ def run_pipeline(query: str) -> dict:
         "perspectives": perspectives,
         "knowledge_graph": kg,
         "summary": summary,
-        "fact_check": fact_check_result,
-    }
+        "fact_check": fc,
+    }}

@@ -1,38 +1,42 @@
+import json
 from agents.llm import llm_call
 
 
 def extract_knowledge_graph(posts: list) -> dict:
-    """Extract entities and relationships from posts."""
     if not posts:
-        return {"entities": [], "relationships": []}
+        return {"nodes": [], "edges": []}
 
     posts_text = ""
     for p in posts[:5]:
-        text = f"{p['title']}. {p['text'][:300]}"
-        posts_text += f"\n---\n{text}\n"
+        posts_text += f"\n---\n{p.get('title', '')}. {p.get('text', '')[:400]}\n"
 
-    system = """You are a knowledge graph extractor. From Reddit discussions, identify key entities (products, technologies, concepts) and their relationships.
+    system = """You are a knowledge graph extractor. From discussions, identify key entities and relationships.
 
 Return a JSON object:
 {
-  "entities": [
-    {"name": "RTX 4090", "type": "product", "mentions": 3, "sentiment": "positive"},
-    {"name": "Ollama", "type": "software", "mentions": 2, "sentiment": "positive"}
+  "nodes": [
+    {"id": "rtx-4090", "label": "RTX 4090", "type": "Hardware"},
+    {"id": "ollama", "label": "Ollama", "type": "Software"},
+    {"id": "vram", "label": "VRAM", "type": "Concept"}
   ],
-  "relationships": [
-    {"source": "Ollama", "target": "Llama 3", "relation": "runs", "evidence": "mentioned in post 0"},
-    {"source": "RTX 4090", "target": "VRAM", "relation": "provides", "evidence": "multiple mentions"}
+  "edges": [
+    {"source": "rtx-4090", "target": "vram", "label": "has 24GB"},
+    {"source": "ollama", "target": "rtx-4090", "label": "runs on"}
   ]
-}"""
+}
 
-    user = f"""Extract knowledge graph from these Reddit discussions:
+Node types: Hardware, Software, Concept, Organization
+Return ONLY JSON."""
+
+    user = f"""Extract knowledge graph from these discussions:
 {posts_text}
 
 Return ONLY JSON."""
 
     result = llm_call(system, user, max_tokens=1000, temperature=0.2)
+    if not result:
+        return {"nodes": [], "edges": []}
     try:
-        import json
         return json.loads(result.strip())
     except:
-        return {"entities": [], "relationships": []}
+        return {"nodes": [], "edges": []}
