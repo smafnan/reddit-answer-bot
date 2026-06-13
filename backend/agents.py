@@ -54,9 +54,23 @@ def configure_llm(provider: str, api_key: str, model: str = None):
         llm_config["client"] = OpenAI(api_key=api_key)
         logger.info(f"Configured OpenAI client (model: {llm_config['model']})")
 
+    elif provider in ("anthropic", "claude"):
+        from anthropic import Anthropic
+        llm_config["provider"] = "anthropic"
+        llm_config["model"] = model or "claude-haiku-4-5-20251001"
+        llm_config["client"] = Anthropic(api_key=api_key)
+        logger.info(f"Configured Anthropic client (model: {llm_config['model']})")
+
     else:
-        llm_config = {"provider": None, "api_key": None, "model": None, "client": None}
-        logger.warning(f"Unknown provider '{provider}'. Using simulated responses.")
+        # Treat unknown providers as OpenAI-compatible endpoints (e.g. local Ollama, Together AI)
+        try:
+            from openai import OpenAI
+            llm_config["model"] = model or "gpt-4o-mini"
+            llm_config["client"] = OpenAI(api_key=api_key)
+            logger.info(f"Unknown provider '{provider}' — using OpenAI-compatible client (model: {llm_config['model']})")
+        except Exception:
+            llm_config = {"provider": None, "api_key": None, "model": None, "client": None}
+            logger.warning(f"Could not initialise client for provider '{provider}'. Using simulated responses.")
 
 # --- Models ---
 
@@ -158,8 +172,31 @@ def call_llm(prompt: str, response_schema: Any = None) -> str:
             )
             return response.choices[0].message.content
 
+        elif provider == "anthropic":
+            # Anthropic uses its own messages API — JSON mode via prefilling
+            user_content = prompt
+            if response_schema:
+                user_content += "\n\nRespond with ONLY valid JSON matching the schema. No explanation, no markdown fences."
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=4096,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_content}]
+            )
+            return response.content[0].text
+
         else:
-            return get_simulated_response(prompt, response_schema)
+            # OpenAI-compatible fallback for unknown providers
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"} if response_schema else None,
+                temperature=0.3
+            )
+            return response.choices[0].message.content
 
     except Exception as e:
         logger.error(f"Error calling {provider} API: {e}")

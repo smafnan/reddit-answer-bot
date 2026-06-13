@@ -6,10 +6,37 @@ const API_BASE = (import.meta as any).env?.VITE_API_URL
     ? 'http://localhost:8000' 
     : '');
 
-const LLM_PROVIDERS: Record<string, { label: string, models: string[] }> = {
-  groq: { label: 'Groq', models: ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'mixtral-8x7b-32768'] },
-  gemini: { label: 'Google Gemini', models: ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash'] },
-  openai: { label: 'OpenAI', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4', 'gpt-3.5-turbo'] },
+const LLM_PROVIDERS: Record<string, { label: string; keyLabel: string; models: string[]; placeholder: string }> = {
+  groq: {
+    label: 'Groq',
+    keyLabel: 'GROQ_API_KEY',
+    models: ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'mixtral-8x7b-32768', 'llama-3.1-70b-versatile'],
+    placeholder: 'gsk_...',
+  },
+  gemini: {
+    label: 'Google Gemini',
+    keyLabel: 'GEMINI_API_KEY',
+    models: ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
+    placeholder: 'AIza...',
+  },
+  openai: {
+    label: 'OpenAI',
+    keyLabel: 'OPENAI_API_KEY',
+    models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+    placeholder: 'sk-...',
+  },
+  anthropic: {
+    label: 'Anthropic (Claude)',
+    keyLabel: 'ANTHROPIC_API_KEY',
+    models: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6', 'claude-opus-4-8'],
+    placeholder: 'sk-ant-...',
+  },
+  custom: {
+    label: 'Custom / Other',
+    keyLabel: 'API_KEY',
+    models: [],
+    placeholder: 'Your API key...',
+  },
 };
 
 interface SavedReportSummary {
@@ -409,14 +436,20 @@ export default function App() {
 
   // Settings state (API key, provider, model)
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('apiKey') || '');
-  const [provider, setProvider] = useState(() => localStorage.getItem('provider') || '');
+  const [provider, setProvider] = useState(() => localStorage.getItem('provider') || 'groq');
   const [model, setSelectedModel] = useState(() => localStorage.getItem('model') || '');
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Custom provider/model — used when provider === 'custom'
+  const [customProviderName, setCustomProviderName] = useState(() => localStorage.getItem('customProviderName') || '');
+  const [customModelName, setCustomModelName] = useState(() => localStorage.getItem('customModelName') || '');
+  // Auto-open settings on first visit if no key is stored
+  const [settingsOpen, setSettingsOpen] = useState(() => !localStorage.getItem('apiKey'));
 
   // Persist settings to localStorage
   useEffect(() => { localStorage.setItem('apiKey', apiKey); }, [apiKey]);
   useEffect(() => { localStorage.setItem('provider', provider); }, [provider]);
   useEffect(() => { localStorage.setItem('model', model); }, [model]);
+  useEffect(() => { localStorage.setItem('customProviderName', customProviderName); }, [customProviderName]);
+  useEffect(() => { localStorage.setItem('customModelName', customModelName); }, [customModelName]);
 
   // Mobile sidebar state
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -539,10 +572,12 @@ export default function App() {
     }
 
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const resolvedProvider = provider === 'custom' ? (customProviderName || 'openai') : provider;
+    const resolvedModel = provider === 'custom' ? customModelName : model;
     const params = new URLSearchParams({ q: searchText });
     if (apiKey) params.set('api_key', apiKey);
-    if (provider) params.set('provider', provider);
-    if (model) params.set('model', model);
+    if (resolvedProvider) params.set('provider', resolvedProvider);
+    if (resolvedModel) params.set('model', resolvedModel);
     const queryString = params.toString();
 
     if (isLocal) {
@@ -731,17 +766,59 @@ export default function App() {
               </div>
             </div>
             <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <p style={{ margin: '0 0 12px 0', fontSize: '11px', color: '#000', flex: 1 }}>
-                  Separate useful community knowledge from spam, bots, and hearsay. Run agentic multi-stage filters to build synthesis reports.
-                </p>
+              <p style={{ margin: '0 0 8px 0', fontSize: '11px', color: '#000' }}>
+                Separate useful community knowledge from spam, bots, and hearsay.
+              </p>
+              {/* Win98 inline API key strip */}
+              <div style={{ display: 'flex', gap: '4px', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '10px', color: '#000', fontFamily: 'Courier New', whiteSpace: 'nowrap' }}>Provider:</span>
+                {['groq','gemini','openai','anthropic'].map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => { setProvider(p); setSelectedModel(''); }}
+                    style={{
+                      background: provider === p ? '#000080' : '#c0c0c0',
+                      color: provider === p ? '#fff' : '#000',
+                      border: '1.5px solid', borderColor: '#fff #808080 #808080 #fff',
+                      fontSize: '9px', padding: '1px 5px', cursor: 'pointer',
+                      fontFamily: 'Courier New',
+                    }}
+                  >
+                    {LLM_PROVIDERS[p]?.label}
+                  </button>
+                ))}
                 <button
+                  type="button"
                   onClick={() => setSettingsOpen(true)}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', padding: '2px 4px', color: '#000' }}
-                  title="Configure LLM settings"
+                  style={{
+                    background: '#c0c0c0', border: '1.5px solid', borderColor: '#fff #808080 #808080 #fff',
+                    fontSize: '9px', padding: '1px 6px', cursor: 'pointer', fontFamily: 'Courier New', marginLeft: '4px'
+                  }}
+                  title="Full settings"
                 >
-                  ⚙️
+                  ⚙️ Settings
                 </button>
+              </div>
+              <div style={{ display: 'flex', gap: '4px', marginBottom: '8px', alignItems: 'center' }}>
+                <span style={{ fontSize: '10px', color: '#000', fontFamily: 'Courier New', whiteSpace: 'nowrap' }}>
+                  {LLM_PROVIDERS[provider]?.keyLabel || 'API Key'}:
+                </span>
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder={LLM_PROVIDERS[provider]?.placeholder || 'Paste key…'}
+                  style={{
+                    flex: 1, border: '2px solid', borderColor: '#808080 #fff #fff #808080',
+                    background: '#fff', color: '#000', fontSize: '10px',
+                    fontFamily: 'Courier New', padding: '2px 4px',
+                  }}
+                />
+                {apiKey
+                  ? <span style={{ fontSize: '9px', color: 'green', fontFamily: 'Courier New' }}>● Live</span>
+                  : <span style={{ fontSize: '9px', color: '#800000', fontFamily: 'Courier New' }}>○ Demo</span>
+                }
               </div>
               <form onSubmit={handleSearchSubmit} className="search-form">
                 <div className="search-input-wrapper">
@@ -1275,51 +1352,124 @@ export default function App() {
           <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
             <div className="settings-modal glass-panel" onClick={(e) => e.stopPropagation()}>
               <div className="settings-header">
-                <h3>LLM Settings</h3>
+                <div>
+                  <h3>LLM Configuration</h3>
+                  <p className="settings-subtitle">Connect your own AI provider for real analysis</p>
+                </div>
                 <button className="settings-close-btn" onClick={() => setSettingsOpen(false)}>✕</button>
               </div>
-              <div className="settings-body">
-                <label className="settings-label">Provider</label>
-                <select
-                  className="settings-select"
-                  value={provider}
-                  onChange={(e) => { setProvider(e.target.value); setSelectedModel(''); }}
-                >
-                  <option value="">— Simulated (no API key) —</option>
-                  {Object.entries(LLM_PROVIDERS).map(([key, p]) => (
-                    <option key={key} value={key}>{p.label}</option>
-                  ))}
-                </select>
 
-                {provider && (
-                  <>
-                    <label className="settings-label">Model</label>
-                    <select
-                      className="settings-select"
-                      value={model}
-                      onChange={(e) => setSelectedModel(e.target.value)}
+              <div className="settings-body">
+                {/* Provider selector */}
+                <label className="settings-label">
+                  Provider
+                  {apiKey && provider && provider !== 'custom' && (
+                    <span className="settings-active-badge">{LLM_PROVIDERS[provider]?.label}</span>
+                  )}
+                </label>
+                <div className="settings-provider-grid">
+                  {Object.entries(LLM_PROVIDERS).map(([key, p]) => (
+                    <button
+                      key={key}
+                      className={`provider-chip ${provider === key ? 'active' : ''}`}
+                      onClick={() => { setProvider(key); setSelectedModel(''); }}
+                      type="button"
                     >
-                      <option value="">— Default model —</option>
-                      {LLM_PROVIDERS[provider]?.models.map((m) => (
-                        <option key={m} value={m}>{m}</option>
-                      ))}
-                    </select>
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Custom provider name — shown when "Custom / Other" is selected */}
+                {provider === 'custom' && (
+                  <>
+                    <label className="settings-label">Provider Name</label>
+                    <input
+                      className="settings-input"
+                      type="text"
+                      placeholder="e.g. together, mistral, ollama…"
+                      value={customProviderName}
+                      onChange={(e) => setCustomProviderName(e.target.value)}
+                    />
+                    <p className="settings-hint">Must be an OpenAI-compatible API endpoint.</p>
                   </>
                 )}
 
-                <label className="settings-label">API Key</label>
-                <input
-                  className="settings-input"
-                  type="password"
-                  placeholder="Enter your API key..."
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                />
-                {!apiKey && (
-                  <p className="settings-hint" style={{ color: 'var(--color-warning)', marginTop: '8px' }}>
-                    ⚠️ No API key — running in Demo Mode. Results are pre-generated for a few preset topics. Add a key for real AI analysis on any query.
-                  </p>
+                {/* Model selector */}
+                <label className="settings-label">Model</label>
+                {provider !== 'custom' && LLM_PROVIDERS[provider]?.models.length > 0 ? (
+                  <select
+                    className="settings-select"
+                    value={model}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                  >
+                    <option value="">— Default ({LLM_PROVIDERS[provider]?.models[0]}) —</option>
+                    {LLM_PROVIDERS[provider].models.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="settings-input"
+                    type="text"
+                    placeholder={provider === 'custom' ? 'e.g. gpt-4o-mini, llama-3-70b…' : 'Model name'}
+                    value={provider === 'custom' ? customModelName : model}
+                    onChange={(e) => provider === 'custom' ? setCustomModelName(e.target.value) : setSelectedModel(e.target.value)}
+                  />
                 )}
+
+                {/* API Key */}
+                <label className="settings-label">
+                  API Key
+                  {provider && provider !== 'custom' && (
+                    <span className="settings-key-env">{LLM_PROVIDERS[provider]?.keyLabel}</span>
+                  )}
+                </label>
+                <div className="settings-key-wrapper">
+                  <input
+                    className="settings-input settings-key-input"
+                    type="password"
+                    placeholder={LLM_PROVIDERS[provider]?.placeholder || 'Your API key…'}
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    autoComplete="off"
+                  />
+                  {apiKey && (
+                    <button
+                      className="settings-key-clear"
+                      type="button"
+                      onClick={() => setApiKey('')}
+                      title="Clear key"
+                    >✕</button>
+                  )}
+                </div>
+
+                {/* Status banner */}
+                {apiKey ? (
+                  <div className="settings-status ok">
+                    <span>✓</span>
+                    <span>
+                      Real AI analysis active —{' '}
+                      <strong>{provider === 'custom' ? (customProviderName || 'custom') : LLM_PROVIDERS[provider]?.label}</strong>
+                      {(provider === 'custom' ? customModelName : model) && (
+                        <> · {provider === 'custom' ? customModelName : model}</>
+                      )}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="settings-status warn">
+                    <span>⚠️</span>
+                    <span>No API key — responses will use pre-generated demo data for a handful of preset topics.</span>
+                  </div>
+                )}
+
+                {/* Quick links */}
+                <div className="settings-links">
+                  <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer">Groq (free)</a>
+                  <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">Gemini (free)</a>
+                  <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">OpenAI</a>
+                  <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">Anthropic</a>
+                </div>
               </div>
             </div>
           </div>
@@ -1329,21 +1479,92 @@ export default function App() {
         {!running && !activeReport && (
           <div style={{ margin: 'auto 0' }}>
             <header className="search-header">
-              <div className="search-header-row">
-                <div>
-                  <h1 className="main-title">Reddit Intelligence Engine</h1>
-                  <p className="sub-title">
-                    Separate useful community knowledge from spam, bots, and hearsay. Run agentic multi-stage filters to build synthesis reports.
-                  </p>
+              <h1 className="main-title">Reddit Intelligence Engine</h1>
+              <p className="sub-title">
+                Separate useful community knowledge from spam, bots, and hearsay. Run agentic multi-stage filters to build synthesis reports.
+              </p>
+            </header>
+
+            {/* Always-visible API key config strip */}
+            <div className="api-config-strip glass-panel" style={{ maxWidth: '800px', margin: '0 auto 20px' }}>
+              <div className="api-config-row">
+                <div className="api-config-provider-pills">
+                  {Object.entries(LLM_PROVIDERS).filter(([k]) => k !== 'custom').map(([key, p]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`api-pill ${provider === key ? 'active' : ''}`}
+                      onClick={() => { setProvider(key); setSelectedModel(''); }}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className={`api-pill ${provider === 'custom' ? 'active' : ''}`}
+                    onClick={() => setProvider('custom')}
+                  >
+                    Custom
+                  </button>
                 </div>
-                <button className="settings-gear-btn" onClick={() => setSettingsOpen(true)} title="Configure LLM settings">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <button
+                  className="settings-gear-btn"
+                  onClick={() => setSettingsOpen(true)}
+                  title="Full LLM settings"
+                  style={{ flexShrink: 0 }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="3"></circle>
                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
                   </svg>
                 </button>
               </div>
-            </header>
+              <div className="api-config-key-row">
+                <div className="api-key-field-wrap">
+                  <span className="api-key-label">
+                    {provider === 'custom'
+                      ? 'API Key'
+                      : (LLM_PROVIDERS[provider]?.keyLabel || 'API Key')}
+                  </span>
+                  <input
+                    className="api-key-inline-input"
+                    type="password"
+                    placeholder={apiKey ? '••••••••••••' : (LLM_PROVIDERS[provider]?.placeholder || 'Paste your API key…')}
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    autoComplete="off"
+                  />
+                  {apiKey && (
+                    <button className="api-key-clear-btn" type="button" onClick={() => setApiKey('')} title="Clear">✕</button>
+                  )}
+                </div>
+                {apiKey ? (
+                  <span className="api-status-badge ok">● Live</span>
+                ) : (
+                  <span className="api-status-badge demo">○ Demo</span>
+                )}
+              </div>
+              {provider === 'custom' && (
+                <div className="api-config-custom-row">
+                  <input
+                    className="api-key-inline-input"
+                    type="text"
+                    placeholder="Provider name (e.g. together, mistral)…"
+                    value={customProviderName}
+                    onChange={(e) => setCustomProviderName(e.target.value)}
+                    style={{ flex: 1 }}
+                  />
+                  <input
+                    className="api-key-inline-input"
+                    type="text"
+                    placeholder="Model name…"
+                    value={customModelName}
+                    onChange={(e) => setCustomModelName(e.target.value)}
+                    style={{ flex: 1 }}
+                  />
+                </div>
+              )}
+            </div>
 
             <div className="glass-panel" style={{ maxWidth: '800px', margin: '0 auto' }}>
               <form onSubmit={handleSearchSubmit} className="search-form">
