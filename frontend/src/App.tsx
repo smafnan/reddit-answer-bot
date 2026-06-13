@@ -94,13 +94,27 @@ const SEARCH_PRESETS = [
 ];
 
 // Interactive Physics Force-Directed Knowledge Graph Component
-function ForceGraph({ graphData }: { graphData: { nodes: GraphNode[]; edges: GraphEdge[] } }) {
+function ForceGraph({ graphData, floating }: { graphData: { nodes: GraphNode[]; edges: GraphEdge[] }; floating?: boolean }) {
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const width = 650;
+  const [width, setWidth] = useState(650);
   const height = 400;
+
+  // Responsive width
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        if (w > 0) setWidth(Math.min(w, 650));
+      }
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
 
   // Initialize positions randomly near the center
   useEffect(() => {
@@ -129,11 +143,11 @@ function ForceGraph({ graphData }: { graphData: { nodes: GraphNode[]; edges: Gra
         const updatedNodes = currentNodes.map((node) => ({ ...node }));
         const nodeMap = new Map(updatedNodes.map((n) => [n.id, n]));
 
-        const kRepulsion = 1500;
-        const kAttraction = 0.06;
-        const d0 = 90; // Preferred link distance
-        const gravity = 0.025; // Pull towards center
-        const friction = 0.85;
+        const kRepulsion = 800;
+        const kAttraction = 0.04;
+        const d0 = 100;
+        const gravity = 0.02;
+        const friction = floating ? 0.92 : 0.85;
 
         // 1. Calculate repulsion forces (all pairs push apart)
         for (let i = 0; i < updatedNodes.length; i++) {
@@ -216,6 +230,15 @@ function ForceGraph({ graphData }: { graphData: { nodes: GraphNode[]; edges: Gra
           if (node.y! > height - boundaryMargin) { node.y! = height - boundaryMargin; node.vy! = 0; }
         });
 
+        // 4. Gentle perpetual drift for floating mode
+        if (floating) {
+          updatedNodes.forEach((node) => {
+            if (node.id === draggedNodeId) return;
+            node.vx! += (Math.random() - 0.5) * 0.12;
+            node.vy! += (Math.random() - 0.5) * 0.12;
+          });
+        }
+
         return updatedNodes;
       });
 
@@ -224,7 +247,7 @@ function ForceGraph({ graphData }: { graphData: { nodes: GraphNode[]; edges: Gra
 
     animationFrameId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [nodes.length, edges, draggedNodeId]);
+  }, [nodes.length, edges, draggedNodeId, floating]);
 
   // Drag Handlers
   const onNodeDragStart = (id: string) => {
@@ -374,8 +397,20 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
   const [activeStep, setActiveStep] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<'synthesis' | 'perspectives' | 'debates' | 'factchecks' | 'graph' | 'comments'>('synthesis');
+  const [activeTab, setActiveTab] = useState<'synthesis' | 'perspectives' | 'debates' | 'factchecks' | 'comments'>('synthesis');
   const [error, setError] = useState<string | null>(null);
+
+  // Mobile sidebar state
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Collapsible sections
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sourcesCollapsed, setSourcesCollapsed] = useState(false);
+
+  // Win98 nostalgia prompt
+  const [showWin98Prompt, setShowWin98Prompt] = useState(() => {
+    return localStorage.getItem('win98PromptDismissed') !== 'true';
+  });
 
   // Theme states
   const [theme, setThemeState] = useState<'dark' | 'light' | 'win98'>(() => {
@@ -531,6 +566,7 @@ export default function App() {
   const selectReport = async (id: string) => {
     setRunning(false);
     setError(null);
+    setSidebarOpen(false);
     try {
       const res = await fetch(`${API_BASE}/api/reports/${id}`);
       if (res.ok) {
@@ -792,7 +828,7 @@ export default function App() {
                     </div>
 
                     <nav className="tabs-nav" style={{ display: 'flex', gap: '2px', borderBottom: '1px solid #808080', paddingBottom: '2px' }}>
-                      {['synthesis', 'perspectives', 'debates', 'factchecks', 'graph', 'comments'].map((tab) => (
+                      {['synthesis', 'perspectives', 'debates', 'factchecks', 'comments'].map((tab) => (
                         <button
                           key={tab}
                           className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
@@ -848,8 +884,6 @@ export default function App() {
                           ))}
                         </div>
                       )}
-
-                      {activeTab === 'graph' && <ForceGraph graphData={activeReport.knowledge_graph} />}
 
                       {activeTab === 'comments' && (
                         <div className="comments-container">
@@ -1037,8 +1071,16 @@ export default function App() {
         <div className="glow-2"></div>
       </div>
 
+      {/* Mobile sidebar toggle */}
+      <button className="sidebar-toggle" onClick={() => setSidebarOpen(!sidebarOpen)}>
+        {sidebarOpen ? '✕' : '☰'}
+      </button>
+
+      {/* Sidebar backdrop */}
+      <div className={`sidebar-backdrop${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
+
       {/* Sidebar: Query History */}
-      <aside className="sidebar">
+      <aside className={`sidebar${sidebarOpen ? ' open' : ''}${sidebarCollapsed ? ' collapsed' : ''}`}>
         <div className="sidebar-header">
           <div className="logo-container">
             <div className="logo-icon">
@@ -1048,11 +1090,24 @@ export default function App() {
             </div>
             <span className="logo-text">Reddit Intelligence</span>
           </div>
+          <button
+            className="sidebar-collapse-btn"
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {sidebarCollapsed
+                ? <><polyline points="9 18 15 12 9 6"></polyline></>
+                : <><polyline points="15 18 9 12 15 6"></polyline></>
+              }
+            </svg>
+          </button>
         </div>
 
-        <h3 className="sidebar-title">Saved Investigations</h3>
+        <div className={`sidebar-collapsible${sidebarCollapsed ? ' collapsed' : ''}`}>
+          <h3 className="sidebar-title">Saved Investigations</h3>
 
-        <div className="reports-list">
+          <div className="reports-list">
           {reports.length === 0 ? (
             <div style={{ padding: '0 8px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
               No recent searches found. Submit your first query to build a report.
@@ -1098,7 +1153,7 @@ export default function App() {
         </div>
 
         <footer className="sidebar-footer" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div>Engine Status: Operational (Simulated fallback active)</div>
+          <div>Engine Status: Operational</div>
           
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', borderTop: '1px solid var(--border-standard)', paddingTop: '10px' }}>
             <span>Theme:</span>
@@ -1122,10 +1177,41 @@ export default function App() {
             </select>
           </div>
         </footer>
+        </div>{/* end sidebar-collapsible */}
       </aside>
 
       {/* Main Content Area */}
       <main className="main-content">
+
+        {/* Win98 Nostalgia Prompt */}
+        {showWin98Prompt && (
+          <div className="win98-prompt">
+            <div className="win98-prompt-content">
+              <span className="win98-prompt-icon">🖥️</span>
+              <span className="win98-prompt-text">Feeling nostalgic? Try <strong>Windows 98 mode</strong> for a retro experience!</span>
+              <button
+                className="win98-prompt-btn"
+                onClick={() => {
+                  setTheme('win98');
+                  setShowWin98Prompt(false);
+                  localStorage.setItem('win98PromptDismissed', 'true');
+                }}
+              >
+                Enable Win98
+              </button>
+              <button
+                className="win98-prompt-dismiss"
+                onClick={() => {
+                  setShowWin98Prompt(false);
+                  localStorage.setItem('win98PromptDismissed', 'true');
+                }}
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
         
         {/* Landing Page: Search Bar */}
         {!running && !activeReport && (
@@ -1309,6 +1395,17 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Entity Graph Section - Always visible between consensus and details */}
+                {activeReport.knowledge_graph && activeReport.knowledge_graph.nodes && activeReport.knowledge_graph.nodes.length > 0 && (
+                  <div className="glass-panel entity-graph-section">
+                    <div className="entity-graph-header">
+                      <h3 className="entity-graph-title">Entity Relationship Map</h3>
+                      <span className="entity-graph-hint">Nodes float gently — drag to explore</span>
+                    </div>
+                    <ForceGraph graphData={activeReport.knowledge_graph} floating />
+                  </div>
+                )}
+
                 {/* Dashboard Tabs & Contents */}
                 <div className="glass-panel" style={{ padding: '24px' }}>
                   <nav className="tabs-nav">
@@ -1335,12 +1432,6 @@ export default function App() {
                       onClick={() => setActiveTab('factchecks')}
                     >
                       Fact-Check ({activeReport.facts_checked.length})
-                    </button>
-                    <button
-                      className={`tab-btn ${activeTab === 'graph' ? 'active' : ''}`}
-                      onClick={() => setActiveTab('graph')}
-                    >
-                      Entity Graph
                     </button>
                     <button
                       className={`tab-btn ${activeTab === 'comments' ? 'active' : ''}`}
@@ -1430,17 +1521,7 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* Tab 5: Entity Graph */}
-                    {activeTab === 'graph' && (
-                      <div>
-                        <div style={{ marginBottom: '16px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                          Drag nodes to reorganise the map. Hover nodes to view glowing relationships.
-                        </div>
-                        <ForceGraph graphData={activeReport.knowledge_graph} />
-                      </div>
-                    )}
-
-                    {/* Tab 6: Featured Comments */}
+                    {/* Tab 5: Featured Comments */}
                     {activeTab === 'comments' && (
                       <div className="comments-container">
                         {activeReport.featured_comments.map((comment, idx) => (
@@ -1469,32 +1550,47 @@ export default function App() {
 
               </div>
 
-              {/* Right Column: Source Threads */}
+              {/* Right Column: Source Threads (collapsible) */}
               <div className="glass-panel sources-card" style={{ height: 'fit-content', position: 'sticky', top: '40px' }}>
-                <h3 className="sources-title">Verified Source Threads</h3>
-                <div className="sources-list">
-                  {activeReport.sources.length === 0 ? (
-                    <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>No external source threads linked.</span>
-                  ) : (
-                    activeReport.sources.map((s, idx) => (
-                      <a
-                        key={idx}
-                        href={s.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="source-link-item"
-                      >
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                          <span style={{ fontWeight: 600, color: 'var(--text-bright)' }}>{s.title}</span>
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                            <span className="source-sub-badge">r/{s.subreddit}</span>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Open post</span>
-                          </div>
-                        </div>
-                      </a>
-                    ))
-                  )}
+                <div className="sources-header-collapsible" onClick={() => setSourcesCollapsed(!sourcesCollapsed)}>
+                  <h3 className="sources-title" style={{ margin: 0 }}>Verified Source Threads</h3>
+                  <button
+                    className="sources-collapse-btn"
+                    title={sourcesCollapsed ? 'Expand' : 'Collapse'}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      {sourcesCollapsed
+                        ? <><polyline points="6 9 12 15 18 9"></polyline></>
+                        : <><polyline points="18 15 12 9 6 15"></polyline></>
+                      }
+                    </svg>
+                  </button>
                 </div>
+                {!sourcesCollapsed && (
+                  <div className="sources-list" style={{ marginTop: '16px' }}>
+                    {activeReport.sources.length === 0 ? (
+                      <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>No external source threads linked.</span>
+                    ) : (
+                      activeReport.sources.map((s, idx) => (
+                        <a
+                          key={idx}
+                          href={s.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="source-link-item"
+                        >
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <span style={{ fontWeight: 600, color: 'var(--text-bright)' }}>{s.title}</span>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                              <span className="source-sub-badge">r/{s.subreddit}</span>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Open post</span>
+                            </div>
+                          </div>
+                        </a>
+                      ))
+                    )}
+                  </div>
+                )}
               </div>
 
             </div>

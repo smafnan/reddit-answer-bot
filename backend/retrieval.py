@@ -6,6 +6,11 @@ import logging
 from typing import List, Dict, Any
 from duckduckgo_search import DDGS
 
+try:
+    import requests
+except ImportError:
+    requests = None
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -174,16 +179,18 @@ def search_reddit_via_ddg(query: str, max_results: int = 5) -> List[Dict[str, An
 
 def search_reddit_via_old_scraping(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     """Search Reddit via old.reddit.com scraping (no API keys needed, fallback from master branch)."""
+    if not requests:
+        logger.warning("requests library not available for old.reddit.com scraping")
+        return []
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     from urllib.parse import quote
-    import requests
-    import re
-    
+
     search_url = f"https://old.reddit.com/search?q={quote(query)}&sort=relevance&limit={limit}"
     results = []
-    
+
     logger.info(f"Searching old.reddit.com: {search_url}")
     try:
         response = requests.get(search_url, headers=headers, timeout=10)

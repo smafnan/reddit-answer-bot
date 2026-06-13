@@ -7,17 +7,22 @@ import datetime
 from typing import Generator, Dict, Any, List, TypedDict
 from langgraph.graph import StateGraph, END
 
-from retrieval import search_reddit_hybrid
-from agents import (
-    query_expansion_agent,
-    spam_and_quality_agent,
-    perspective_contradiction_agent,
-    knowledge_graph_agent,
-    fact_checking_agent,
-    consensus_synthesis_agent
-)
-
+# Setup logger first (used in try-except below)
 logger = logging.getLogger(__name__)
+
+try:
+    from retrieval import search_reddit_hybrid
+    from agents import (
+        query_expansion_agent,
+        spam_and_quality_agent,
+        perspective_contradiction_agent,
+        knowledge_graph_agent,
+        fact_checking_agent,
+        consensus_synthesis_agent
+    )
+except ImportError as e:
+    logger.error(f"Failed to import required modules: {e}")
+    raise
 
 # Ensure data directory exists for report persistence
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")

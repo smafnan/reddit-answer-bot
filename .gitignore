@@ -11,4 +11,5 @@ frontend/.vite/
 
 # Logs and OS files
 *.log
+*.err
 .DS_Store

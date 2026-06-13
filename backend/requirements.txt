@@ -1,11 +1,12 @@
 fastapi
 uvicorn
 langgraph
-google-genai
+google-generativeai
 praw
 qdrant-client
 duckduckgo-search
 pydantic
 python-dotenv
 groq
+requests
 
