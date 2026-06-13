@@ -538,7 +538,6 @@ export default function App() {
       setWin98Windows(p => ({ ...p, search: false }));
     }
 
-    const encoded = encodeURIComponent(searchText);
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     const params = new URLSearchParams({ q: searchText });
     if (apiKey) params.set('api_key', apiKey);
