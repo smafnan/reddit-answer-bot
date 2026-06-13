@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 try:
     from retrieval import search_reddit_hybrid
     from agents import (
+        configure_llm,
         query_expansion_agent,
         spam_and_quality_agent,
         perspective_contradiction_agent,
@@ -245,10 +246,15 @@ compiled_graph = workflow.compile()
 class RedditIntelligencePipeline:
     """Orchestrates the multi-agent LangGraph workflow, yielding progress steps in real time."""
     
-    def __init__(self, query: str):
+    def __init__(self, query: str, api_key: str = None, provider: str = None, model: str = None):
         self.query = query
+        self.api_key = api_key
+        self.provider = provider
+        self.model = model
 
     def run(self) -> Generator[Dict[str, Any], None, None]:
+        configure_llm(self.provider, self.api_key, self.model)
+
         # Initial State
         state = {
             "query": self.query,

@@ -1782,3 +1782,114 @@ body {
   margin: 4px 2px;
 }
 
+/* Settings Modal */
+.search-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.settings-gear-btn {
+  background: none;
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: all 0.2s;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.settings-gear-btn:hover {
+  color: var(--text-bright);
+  border-color: var(--color-primary);
+  background: var(--bg-panel);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-modal {
+  width: 380px;
+  max-width: 90vw;
+  padding: 24px;
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.settings-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--text-bright);
+  font-family: var(--font-display);
+}
+
+.settings-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 1rem;
+}
+
+.settings-close-btn:hover {
+  color: var(--text-bright);
+  background: var(--bg-panel-hover);
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-main);
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+.settings-select,
+.settings-input {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  color: var(--text-bright);
+  font-size: 0.85rem;
+  outline: none;
+  transition: border-color 0.2s;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.settings-select:focus,
+.settings-input:focus {
+  border-color: var(--color-primary);
+}
+
+.settings-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 4px 0 0;
+}
+

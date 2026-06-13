@@ -6,6 +6,12 @@ const API_BASE = (import.meta as any).env?.VITE_API_URL
     ? 'http://localhost:8000' 
     : '');
 
+const LLM_PROVIDERS: Record<string, { label: string, models: string[] }> = {
+  groq: { label: 'Groq', models: ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'mixtral-8x7b-32768'] },
+  gemini: { label: 'Google Gemini', models: ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash'] },
+  openai: { label: 'OpenAI', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4', 'gpt-3.5-turbo'] },
+};
+
 interface SavedReportSummary {
   id: string;
   query: string;
@@ -401,6 +407,17 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'synthesis' | 'perspectives' | 'debates' | 'factchecks' | 'comments'>('synthesis');
   const [error, setError] = useState<string | null>(null);
 
+  // Settings state (API key, provider, model)
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('apiKey') || '');
+  const [provider, setProvider] = useState(() => localStorage.getItem('provider') || '');
+  const [model, setSelectedModel] = useState(() => localStorage.getItem('model') || '');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Persist settings to localStorage
+  useEffect(() => { localStorage.setItem('apiKey', apiKey); }, [apiKey]);
+  useEffect(() => { localStorage.setItem('provider', provider); }, [provider]);
+  useEffect(() => { localStorage.setItem('model', model); }, [model]);
+
   // Mobile sidebar state
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -523,10 +540,15 @@ export default function App() {
 
     const encoded = encodeURIComponent(searchText);
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const params = new URLSearchParams({ q: searchText });
+    if (apiKey) params.set('api_key', apiKey);
+    if (provider) params.set('provider', provider);
+    if (model) params.set('model', model);
+    const queryString = params.toString();
 
     if (isLocal) {
       // Local dev: use SSE streaming
-      const eventSource = new EventSource(`${API_BASE}/api/query?q=${encoded}`);
+      const eventSource = new EventSource(`${API_BASE}/api/query?${queryString}`);
 
       eventSource.onmessage = (event) => {
         try {
@@ -570,7 +592,7 @@ export default function App() {
       setProgressSteps([
         { step: 'query_expansion', message: 'Running analysis...', details: 'Processing your question' }
       ]);
-      fetch(`${API_BASE}/api/query-sync?q=${encoded}`)
+      fetch(`${API_BASE}/api/query-sync?${queryString}`)
         .then(async (res) => {
           if (!res.ok) {
             const errText = await res.text();
@@ -710,9 +732,18 @@ export default function App() {
               </div>
             </div>
             <div>
-              <p style={{ margin: '0 0 12px 0', fontSize: '11px', color: '#000' }}>
-                Separate useful community knowledge from spam, bots, and hearsay. Run agentic multi-stage filters to build synthesis reports.
-              </p>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <p style={{ margin: '0 0 12px 0', fontSize: '11px', color: '#000', flex: 1 }}>
+                  Separate useful community knowledge from spam, bots, and hearsay. Run agentic multi-stage filters to build synthesis reports.
+                </p>
+                <button
+                  onClick={() => setSettingsOpen(true)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', padding: '2px 4px', color: '#000' }}
+                  title="Configure LLM settings"
+                >
+                  ⚙️
+                </button>
+              </div>
               <form onSubmit={handleSearchSubmit} className="search-form">
                 <div className="search-input-wrapper">
                   <input
@@ -1240,14 +1271,77 @@ export default function App() {
           </div>
         )}
         
+        {/* Settings Modal */}
+        {settingsOpen && (
+          <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
+            <div className="settings-modal glass-panel" onClick={(e) => e.stopPropagation()}>
+              <div className="settings-header">
+                <h3>LLM Settings</h3>
+                <button className="settings-close-btn" onClick={() => setSettingsOpen(false)}>✕</button>
+              </div>
+              <div className="settings-body">
+                <label className="settings-label">Provider</label>
+                <select
+                  className="settings-select"
+                  value={provider}
+                  onChange={(e) => { setProvider(e.target.value); setSelectedModel(''); }}
+                >
+                  <option value="">— Simulated (no API key) —</option>
+                  {Object.entries(LLM_PROVIDERS).map(([key, p]) => (
+                    <option key={key} value={key}>{p.label}</option>
+                  ))}
+                </select>
+
+                {provider && (
+                  <>
+                    <label className="settings-label">Model</label>
+                    <select
+                      className="settings-select"
+                      value={model}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                    >
+                      <option value="">— Default model —</option>
+                      {LLM_PROVIDERS[provider]?.models.map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </>
+                )}
+
+                <label className="settings-label">API Key</label>
+                <input
+                  className="settings-input"
+                  type="password"
+                  placeholder="Enter your API key..."
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                />
+                {provider && !apiKey && (
+                  <p className="settings-hint">No key = simulated responses (no real LLM calls)</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Landing Page: Search Bar */}
         {!running && !activeReport && (
           <div style={{ margin: 'auto 0' }}>
             <header className="search-header">
-              <h1 className="main-title">Reddit Intelligence Engine</h1>
-              <p className="sub-title">
-                Separate useful community knowledge from spam, bots, and hearsay. Run agentic multi-stage filters to build synthesis reports.
-              </p>
+              <div className="search-header-row">
+                <div>
+                  <h1 className="main-title">Reddit Intelligence Engine</h1>
+                  <p className="sub-title">
+                    Separate useful community knowledge from spam, bots, and hearsay. Run agentic multi-stage filters to build synthesis reports.
+                  </p>
+                </div>
+                <button className="settings-gear-btn" onClick={() => setSettingsOpen(true)} title="Configure LLM settings">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                  </svg>
+                </button>
+              </div>
             </header>
 
             <div className="glass-panel" style={{ maxWidth: '800px', margin: '0 auto' }}>

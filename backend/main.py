@@ -37,23 +37,32 @@ def read_root():
     return {"status": "healthy", "service": "Reddit Intelligence Engine API"}
 
 @app.get("/api/query")
-def stream_query(q: str = Query(..., description="The user question to research")):
+def stream_query(
+    q: str = Query(..., description="The user question to research"),
+    api_key: str = Query(default=None, description="LLM provider API key"),
+    provider: str = Query(default=None, description="LLM provider (groq, gemini, openai)"),
+    model: str = Query(default=None, description="Model name override")
+):
     """Streams the multi-agent execution status and final results to the client."""
     logger.info(f"Received query request: {q}")
-    pipeline = RedditIntelligencePipeline(q)
+    pipeline = RedditIntelligencePipeline(q, api_key=api_key, provider=provider, model=model)
 
     def event_generator():
         for step_update in pipeline.run():
-            # Standard SSE format: "data: {JSON}\n\n"
             yield f"data: {json.dumps(step_update)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.get("/api/query-sync")
-def query_sync(q: str = Query(..., description="The user question to research")):
+def query_sync(
+    q: str = Query(..., description="The user question to research"),
+    api_key: str = Query(default=None, description="LLM provider API key"),
+    provider: str = Query(default=None, description="LLM provider (groq, gemini, openai)"),
+    model: str = Query(default=None, description="Model name override")
+):
     """Synchronous version of the query endpoint. Returns the full report as JSON."""
     logger.info(f"Received sync query request: {q}")
-    pipeline = RedditIntelligencePipeline(q)
+    pipeline = RedditIntelligencePipeline(q, api_key=api_key, provider=provider, model=model)
     report_data = None
     for step_update in pipeline.run():
         if step_update["step"] == "completed":

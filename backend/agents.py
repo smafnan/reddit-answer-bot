@@ -13,34 +13,49 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize LLM Client
-gemini_client = None
-gemini_model = "gemini-1.5-flash"  # standard fast model
+# Dynamic LLM Configuration (set via configure_llm())
+llm_config: Dict[str, Any] = {
+    "provider": None,
+    "api_key": None,
+    "model": None,
+    "client": None,
+}
 
-try:
-    import google.generativeai as google_genai
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if api_key:
-        google_genai.configure(api_key=api_key)
-        gemini_client = "configured"
-        logger.info("Initialized Google GenerativeAI client successfully.")
-    else:
-        logger.warning("No GEMINI_API_KEY or GOOGLE_API_KEY found. Will use simulated responses.")
-except Exception as e:
-    logger.warning(f"Could not initialize google-generativeai client ({e}). Will use simulated responses.")
+def configure_llm(provider: str, api_key: str, model: str = None):
+    """Dynamically initialise an LLM client for the given provider."""
+    global llm_config
 
+    if not api_key:
+        llm_config = {"provider": None, "api_key": None, "model": None, "client": None}
+        logger.info("No API key provided — using simulated responses.")
+        return
 
-# Initialize Groq Client
-groq_client = None
-groq_model = "llama-3.1-8b-instant"
-try:
-    groq_api_key = os.environ.get("GROQ_API_KEY")
-    if groq_api_key:
+    provider = provider.lower()
+    llm_config["provider"] = provider
+    llm_config["api_key"] = api_key
+
+    if provider == "groq":
         from groq import Groq
-        groq_client = Groq(api_key=groq_api_key)
-        logger.info("Initialized Groq client successfully.")
-except Exception as e:
-    logger.warning(f"Could not initialize Groq client: {e}")
+        llm_config["model"] = model or "llama-3.1-8b-instant"
+        llm_config["client"] = Groq(api_key=api_key)
+        logger.info(f"Configured Groq client (model: {llm_config['model']})")
+
+    elif provider == "gemini":
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        llm_config["model"] = model or "gemini-1.5-flash"
+        llm_config["client"] = "configured"
+        logger.info(f"Configured Gemini client (model: {llm_config['model']})")
+
+    elif provider == "openai":
+        from openai import OpenAI
+        llm_config["model"] = model or "gpt-4o-mini"
+        llm_config["client"] = OpenAI(api_key=api_key)
+        logger.info(f"Configured OpenAI client (model: {llm_config['model']})")
+
+    else:
+        llm_config = {"provider": None, "api_key": None, "model": None, "client": None}
+        logger.warning(f"Unknown provider '{provider}'. Using simulated responses.")
 
 # --- Models ---
 
@@ -95,56 +110,58 @@ class IntelligenceReport(BaseModel):
 
 # --- API Callers ---
 
-def call_groq(prompt: str, response_schema: Any = None) -> str:
-    """Helper to call Groq API with JSON schema enforcement."""
-    if not groq_client:
-        return "{}"
-    try:
-        system_prompt = "You are a helpful structured JSON assistant."
-        if response_schema:
-            system_prompt += f" You MUST return a JSON object that strictly conforms to this JSON schema: {response_schema.model_json_schema()}"
-            
-        response = groq_client.chat.completions.create(
-            model=groq_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"} if response_schema else None,
-            temperature=0.3
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.error(f"Error calling Groq API: {e}")
+def call_llm(prompt: str, response_schema: Any = None) -> str:
+    """Helper to call the configured LLM, falling back to simulated data if no client is active."""
+    provider = llm_config["provider"]
+    client = llm_config["client"]
+    model_name = llm_config["model"]
+
+    if not provider or not client:
         return get_simulated_response(prompt, response_schema)
 
-def call_llm(prompt: str, response_schema: Any = None) -> str:
-    """Helper to call Gemini or Groq API, falling back to simulated data if no key is configured."""
-    has_gemini = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
-    has_groq = bool(os.environ.get("GROQ_API_KEY"))
+    system_prompt = "You are a helpful structured JSON assistant."
+    if response_schema:
+        system_prompt += f" You MUST return a JSON object that strictly conforms to this JSON schema: {response_schema.model_json_schema()}"
 
-    # 1. Try Gemini first if keys are present
-    if has_gemini and gemini_client:
-        try:
+    try:
+        if provider == "groq":
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"} if response_schema else None,
+                temperature=0.3
+            )
+            return response.choices[0].message.content
+
+        elif provider == "gemini":
             import google.generativeai as google_genai
             model = google_genai.GenerativeModel(
-                model_name=gemini_model,
+                model_name=model_name,
                 generation_config={"response_mime_type": "application/json"} if response_schema else None
             )
             response = model.generate_content(prompt)
             return response.text
-        except Exception as gemini_err:
-            logger.error(f"Gemini API call failed: {gemini_err}. Attempting Groq fallback...")
-            if has_groq and groq_client:
-                return call_groq(prompt, response_schema)
+
+        elif provider == "openai":
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"} if response_schema else None,
+                temperature=0.3
+            )
+            return response.choices[0].message.content
+
+        else:
             return get_simulated_response(prompt, response_schema)
 
-    # 2. Try Groq if Gemini key is missing but Groq is available
-    elif has_groq and groq_client:
-        return call_groq(prompt, response_schema)
-
-    # 3. Fallback to simulated responses if offline
-    else:
+    except Exception as e:
+        logger.error(f"Error calling {provider} API: {e}")
         return get_simulated_response(prompt, response_schema)
 
 # --- Dynamic Simulated Fallbacks ---
@@ -566,8 +583,8 @@ def spam_and_quality_agent(comments: List[Dict[str, Any]]) -> List[Dict[str, Any
     if not candidates:
         return []
 
-    # If gemini client is not active, return candidate list scored by heuristics
-    if not gemini_client:
+    # If no LLM is active, return candidate list scored by heuristics
+    if not llm_config["provider"]:
         # Fill in reasons
         for idx, c in enumerate(candidates):
             c["is_spam"] = False
@@ -710,7 +727,7 @@ def fact_checking_agent(query: str, comments: List[Dict[str, Any]]) -> List[Dict
 
     claims = []
     try:
-        if gemini_client or groq_client:
+        if llm_config["provider"]:
             res_text = call_llm(identify_prompt)
             # Find JSON block in output
             match = re.search(r'\[.*\]', res_text.replace('\n', ' '))
@@ -774,7 +791,7 @@ def fact_checking_agent(query: str, comments: List[Dict[str, Any]]) -> List[Dict
         """
         
         try:
-            if gemini_client or groq_client:
+            if llm_config["provider"]:
                 res_text = call_llm(verify_prompt, response_schema=FactCheckClaim)
                 fact_obj = json.loads(res_text)
                 # Ensure the claim string matches the checked claim
