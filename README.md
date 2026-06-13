@@ -151,46 +151,71 @@ Without API keys, the system uses intelligent simulated responses for testing an
 
 ---
 
-## Deploy to Netlify (Frontend + Backend)
+## Deployment
 
-This project ships with a `netlify.toml` and a Mangum-powered serverless function that wraps the FastAPI backend, so the whole app deploys to Netlify in one go.
+### Why the live site can't reach the backend
 
-### One-click Deploy
+Netlify free-tier functions have a **10-second timeout** and don't support Server-Sent Events (SSE) streaming properly. The pipeline needs 2–5 seconds in simulated mode or 15–30 seconds with a real LLM. The frontend now auto-detects the environment:
 
-[![Deploy to Netlify](https://www.netlify.com/img/deploy/button.svg)](https://app.netlify.com/start/deploy?repository=https://github.com/smafnan/reddit-answer-bot)
+| Environment | Endpoint | Behaviour |
+|-------------|----------|-----------|
+| `localhost` (dev) | `/api/query` (SSE) | Real-time streaming with progress steps |
+| Production | `/api/query-sync` (JSON) | One-shot fetch — show report when done |
 
-### Manual Setup
+### Option A — All on Netlify (recommended for demo)
+
+The backend runs as a Netlify Function via Mangum. Use the sync endpoint — works within the 10 s timeout for simulated mode.
+
+**Settings:**
 
 | Setting | Value |
 |---------|-------|
 | **Branch to deploy** | `main` |
-| **Base directory** | *(leave empty — root)* |
+| **Base directory** | *(leave empty)* |
 | **Build command** | `cd frontend && npm ci && npm run build` |
 | **Publish directory** | `frontend/dist` |
 | **Functions directory** | `netlify/functions` |
 
-### Required Environment Variables
-
-Set these in **Netlify → Site settings → Environment variables**:
+**Environment variables** (Netlify → Site settings → Environment variables):
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GROQ_API_KEY` | No (fallback to simulated) | Get one free at [console.groq.com](https://console.groq.com) |
-| `GEMINI_API_KEY` | No | Google Gemini API key |
-| `REDDIT_CLIENT_ID` | No | Reddit app client ID |
-| `REDDIT_CLIENT_SECRET` | No | Reddit app client secret |
+| `GROQ_API_KEY` | No (simulated fallback) | Get one free at [console.groq.com](https://console.groq.com) |
 
-### How it works
+### Option B — Frontend on Netlify, Backend on Render (recommended for production)
 
-```
-User → Netlify CDN
-         ├── /api/* → /.netlify/functions/api/:splat  (FastAPI via Mangum)
-         └── /*     → /index.html                      (React SPA)
-```
+Deploy the backend on [Render](https://render.com) (free tier — 512 MB RAM, no request timeout) for faster real-LLM responses without the 10 s function limit.
 
-The `netlify/functions/api.py` handler wraps the FastAPI app using `Mangum`, making the entire 7-agent pipeline available as a serverless function. The report data directory uses `/tmp/` on Netlify (reports persist only during a single function invocation).
+**Backend (Render):**
 
-> **Note:** The streaming `/api/query` SSE endpoint uses long-lived connections. Netlify free-tier functions have a 10-second timeout. For production use, consider upgrading to a Netlify plan with longer timeout or deploying the backend separately on Railway/Render.
+1. Go to [dashboard.render.com](https://dashboard.render.com) → **New +** → **Web Service**
+2. Connect your GitHub repo (`smafnan/reddit-answer-bot`)
+3. Use these settings:
+
+| Setting | Value |
+|---------|-------|
+| **Name** | `reddit-intelligence-api` |
+| **Branch** | `main` |
+| **Root Directory** | `backend` |
+| **Runtime** | `Python 3` |
+| **Build Command** | `pip install -r requirements.txt` |
+| **Start Command** | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| **Plan** | **Free** |
+
+4. Add environment variable: `GROQ_API_KEY` (same key from your `.env`)
+5. Deploy — Render gives you a URL like `https://reddit-intelligence-api.onrender.com`
+
+**Frontend (Netlify):**
+
+Add an environment variable in **Netlify → Site settings → Environment variables**:
+
+| Key | Value |
+|-----|-------|
+| `VITE_API_URL` | `https://reddit-intelligence-api.onrender.com` |
+
+The frontend will read this variable and send API calls to your Render backend automatically.
+
+> **Tip:** Render's free tier spins down after 15 minutes of inactivity. The first request after idle takes ~30 seconds to wake up. Subsequent requests are instant.
 
 ---
 

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 // API Base configuration
-const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-  ? 'http://localhost:8000' 
-  : '';
+const API_BASE = (import.meta as any).env?.VITE_API_URL 
+  || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+    ? 'http://localhost:8000' 
+    : '');
 
 interface SavedReportSummary {
   id: string;
@@ -521,46 +522,72 @@ export default function App() {
     }
 
     const encoded = encodeURIComponent(searchText);
-    const eventSource = new EventSource(`${API_BASE}/api/query?q=${encoded}`);
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
+    if (isLocal) {
+      // Local dev: use SSE streaming
+      const eventSource = new EventSource(`${API_BASE}/api/query?q=${encoded}`);
 
-        if (data.step === 'completed') {
-          setActiveReport(data.data);
-          setRunning(false);
-          eventSource.close();
-          loadReports(); // reload sidebar history
-        } else if (data.step === 'failed') {
-          setError(data.details || "Pipeline run failed.");
-          setRunning(false);
-          eventSource.close();
-        } else {
-          // Add/update step progress
-          setProgressSteps((prev) => {
-            const idx = prev.findIndex((s) => s.step === data.step);
-            if (idx !== -1) {
-              const copy = [...prev];
-              copy[idx] = data;
-              return copy;
-            } else {
-              return [...prev, data];
-            }
-          });
-          setActiveStep(data.step);
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.step === 'completed') {
+            setActiveReport(data.data);
+            setRunning(false);
+            eventSource.close();
+            loadReports();
+          } else if (data.step === 'failed') {
+            setError(data.details || "Pipeline run failed.");
+            setRunning(false);
+            eventSource.close();
+          } else {
+            setProgressSteps((prev) => {
+              const idx = prev.findIndex((s) => s.step === data.step);
+              if (idx !== -1) {
+                const copy = [...prev];
+                copy[idx] = data;
+                return copy;
+              } else {
+                return [...prev, data];
+              }
+            });
+            setActiveStep(data.step);
+          }
+        } catch (err) {
+          console.error("SSE parse error", err);
         }
-      } catch (err) {
-        console.error("SSE parse error", err);
-      }
-    };
+      };
 
-    eventSource.onerror = (err) => {
-      console.error("SSE connection error", err);
-      setError("Lost connection to server stream.");
-      setRunning(false);
-      eventSource.close();
-    };
+      eventSource.onerror = (err) => {
+        console.error("SSE connection error", err);
+        setError("Lost connection to server stream.");
+        setRunning(false);
+        eventSource.close();
+      };
+    } else {
+      // Production (Netlify/Render): use sync endpoint
+      setProgressSteps([
+        { step: 'query_expansion', message: 'Running analysis...', details: 'Processing your question' }
+      ]);
+      fetch(`${API_BASE}/api/query-sync?q=${encoded}`)
+        .then(async (res) => {
+          if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(errText || `HTTP ${res.status}`);
+          }
+          return res.json();
+        })
+        .then((data) => {
+          setActiveReport(data);
+          setRunning(false);
+          loadReports();
+        })
+        .catch((err) => {
+          setError(err.message || "Failed to process query.");
+          setRunning(false);
+        });
+    }
   };
 
   const selectReport = async (id: string) => {

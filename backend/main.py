@@ -49,6 +49,21 @@ def stream_query(q: str = Query(..., description="The user question to research"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+@app.get("/api/query-sync")
+def query_sync(q: str = Query(..., description="The user question to research")):
+    """Synchronous version of the query endpoint. Returns the full report as JSON."""
+    logger.info(f"Received sync query request: {q}")
+    pipeline = RedditIntelligencePipeline(q)
+    report_data = None
+    for step_update in pipeline.run():
+        if step_update["step"] == "completed":
+            report_data = step_update["data"]
+        elif step_update["step"] == "failed":
+            raise HTTPException(status_code=500, detail=step_update.get("details", "Pipeline failed"))
+    if report_data is None:
+        raise HTTPException(status_code=500, detail="Pipeline did not produce a report")
+    return report_data
+
 @app.get("/api/reports")
 def list_reports():
     """Lists summaries of all previously generated and saved reports."""
