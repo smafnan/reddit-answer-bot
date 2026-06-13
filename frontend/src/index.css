@@ -419,6 +419,7 @@ body {
 .search-header {
   text-align: center;
   margin-bottom: 40px;
+  position: relative;
 }
 .main-title {
   font-family: var(--font-display);
@@ -1147,7 +1148,25 @@ body {
 
   .main-content {
     padding: 16px;
+    padding-top: 60px; /* room for fixed hamburger button */
     margin-top: 0;
+  }
+
+  /* Stack the title+gear row vertically on mobile */
+  .search-header-row {
+    flex-direction: column;
+    align-items: center !important;
+    gap: 8px !important;
+  }
+  .search-header-row > div {
+    width: 100%;
+    text-align: center;
+  }
+  .settings-gear-btn {
+    align-self: flex-end;
+    position: absolute;
+    top: 60px;
+    right: 16px;
   }
 
   .main-title {
@@ -1306,13 +1325,29 @@ body {
     justify-content: center;
     padding: 10px !important;
   }
+  .search-btn span {
+    display: inline !important; /* show "Analyze" text on small full-width button */
+  }
   .search-icon-left {
     display: none;
   }
 
+  .tabs-nav {
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x mandatory;
+    padding-bottom: 4px;
+  }
   .tab-btn {
     font-size: 0.65rem !important;
     padding: 4px 8px !important;
+    scroll-snap-align: start;
+    white-space: nowrap;
+  }
+
+  .graph-legend {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    font-size: 0.65rem;
   }
 
   .source-link-item {
@@ -1335,6 +1370,13 @@ body {
     width: 100vw !important;
     max-width: 100vw;
     min-width: auto;
+  }
+
+  /* Stack the gear button below the search header on very small screens */
+  .settings-gear-btn {
+    position: static !important;
+    margin: 8px auto 0;
+    display: block;
   }
 
   .win98-desktop-area {

@@ -1315,8 +1315,10 @@ export default function App() {
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                 />
-                {provider && !apiKey && (
-                  <p className="settings-hint">No key = simulated responses (no real LLM calls)</p>
+                {!apiKey && (
+                  <p className="settings-hint" style={{ color: 'var(--color-warning)', marginTop: '8px' }}>
+                    ⚠️ No API key — running in Demo Mode. Results are pre-generated for a few preset topics. Add a key for real AI analysis on any query.
+                  </p>
                 )}
               </div>
             </div>

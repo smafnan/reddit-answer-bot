@@ -14,6 +14,7 @@ try:
     from retrieval import search_reddit_hybrid
     from agents import (
         configure_llm,
+        llm_config,
         query_expansion_agent,
         spam_and_quality_agent,
         perspective_contradiction_agent,
@@ -151,6 +152,13 @@ def get_mock_retrieved_comments(query: str) -> List[Dict[str, Any]]:
 def retrieve_comments_node(state: AgentState) -> Dict[str, Any]:
     logger.info("Executing retrieve_comments_node")
     query = state["query"]
+
+    # In simulated/demo mode (no LLM configured), skip slow real network calls entirely
+    # and immediately return topic-specific mock comments to avoid Netlify function timeouts.
+    if not llm_config.get("provider"):
+        logger.info("No LLM configured — skipping real Reddit retrieval, using mock data.")
+        return {"retrieved_comments": get_mock_retrieved_comments(query)}
+
     expanded = state["expanded_queries"]
     
     # We query the original query + top 2 expanded queries to limit execution time
