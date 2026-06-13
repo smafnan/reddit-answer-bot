@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)](https://react.dev)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![GitHub release](https://img.shields.io/github/v/release/smafnan/reddit-answer-bot)](https://github.com/smafnan/reddit-answer-bot/releases)
+[![GitHub release](https://img.shields.io/badge/release-v1.0.0-blue?logo=github)](https://github.com/smafnan/reddit-answer-bot/releases/tag/v1.0.0)
 
 A multi-agent system that synthesizes community consensus from Reddit discussions. Ask any question and get an intelligence report — complete with perspectives, fact-checks, contradictions, entity graphs, and a confidence-scored synthesis.
 
