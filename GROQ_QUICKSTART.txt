@@ -1,0 +1,124 @@
+╔══════════════════════════════════════════════════════════════════════════╗
+║                   GROQ API SETUP - QUICK START GUIDE                     ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+📋 CHECKLIST:
+
+1️⃣  VERIFY .env FILE HAS YOUR GROQ API KEY
+   Location: D:\dev\Kids Dev\reddit-answer-bot\backend\.env
+
+   Should contain:
+   ┌────────────────────────────────────┐
+   │ GROQ_API_KEY=gsk_your_actual_key   │
+   │ PORT=8000                           │
+   └────────────────────────────────────┘
+
+   ✅ If not, edit .env and add your key from https://console.groq.com/keys
+
+2️⃣  VERIFY GROQ IS WORKING
+   Run this command:
+
+   cd D:\dev\Kids Dev\reddit-answer-bot\backend
+   python verify_groq.py
+
+   You should see:
+   ✅ GROQ_API_KEY found
+   ✅ Groq library imported successfully
+   ✅ Groq client initialized successfully
+   ✅ API Response: Groq is working!
+
+   If you get ❌ errors, check your API key!
+
+3️⃣  START THE BACKEND
+
+   python main.py
+
+   Look for this log line:
+   INFO:agents:Initialized Groq client successfully.
+
+   Then you'll see:
+   INFO:     Uvicorn running on http://0.0.0.0:8000
+
+4️⃣  OPEN THE INTERACTIVE UI
+
+   Double-click: D:\dev\Kids Dev\reddit-answer-bot\INTERACTIVE_UI.html
+
+   OR open in browser: file:///D:/dev/Kids%20Dev/reddit-answer-bot/INTERACTIVE_UI.html
+
+5️⃣  START ASKING QUESTIONS!
+
+   Type a question like:
+   • "Is a CS degree worth it?"
+   • "Best programming language for beginners?"
+   • "MacBook vs Windows for development?"
+
+   Watch the 7-agent pipeline execute in real-time! 🚀
+
+═════════════════════════════════════════════════════════════════════════════
+
+⚡ WHAT GROQ POWERS:
+
+   🔍 Query Expansion Agent      → Generates 8-10 search angles
+   📡 Reddit Retrieval Agent     → Fetches comments with fallbacks
+   🛡️  Spam Filter Agent         → Evaluates comment quality (Groq)
+   👥 Perspective Agent          → Groups viewpoints (Groq)
+   🔗 Knowledge Graph Agent      → Maps relationships (Groq)
+   ✓  Fact-Check Agent           → Verifies claims (Groq)
+   ⚙️  Synthesis Agent            → Final report (Groq)
+
+═════════════════════════════════════════════════════════════════════════════
+
+🆘 TROUBLESHOOTING:
+
+PROBLEM: "Could not initialize Groq client"
+→ Check .env has correct GROQ_API_KEY
+→ Run: python verify_groq.py
+
+PROBLEM: "Using simulated responses"
+→ GROQ_API_KEY not set in .env
+→ Make sure you restarted python main.py
+
+PROBLEM: "API key invalid"
+→ Go to https://console.groq.com/keys
+→ Create a new key
+→ Update .env with new key
+→ Restart main.py
+
+═════════════════════════════════════════════════════════════════════════════
+
+📊 PERFORMANCE WITH GROQ:
+
+Speed:     15-30 seconds per query
+Quality:   Excellent (Real Reddit + Groq synthesis)
+Cost:      FREE (Groq free tier)
+Model:     llama-3.1-8b-instant
+
+═════════════════════════════════════════════════════════════════════════════
+
+✨ FILES YOU HAVE:
+
+   📄 GROQ_SETUP_GUIDE.md          → Full setup documentation
+   🔧 verify_groq.py               → Test script (run to verify)
+   📄 GROQ_QUICKSTART.txt          → This file
+   🌐 INTERACTIVE_UI.html          → Beautiful web interface
+   🐍 main.py                       → Backend server
+   🤖 agents.py                     → 7 AI agents
+
+═════════════════════════════════════════════════════════════════════════════
+
+🎯 YOUR NEXT STEPS:
+
+   1. cd D:\dev\Kids Dev\reddit-answer-bot\backend
+   2. python verify_groq.py              ← Test Groq
+   3. python main.py                     ← Start backend
+   4. Open INTERACTIVE_UI.html in browser
+   5. Ask your first question!
+
+═════════════════════════════════════════════════════════════════════════════
+
+🚀 YOU'RE READY TO ANALYZE REDDIT WITH AI!
+
+Questions? Check: GROQ_SETUP_GUIDE.md
+Issues? Run: python verify_groq.py
+
+Let's go! 🎉

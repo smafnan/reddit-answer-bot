@@ -15,31 +15,20 @@ logger = logging.getLogger(__name__)
 
 # Initialize LLM Client
 gemini_client = None
-gemini_model = "gemini-2.5-flash"  # standard fast model
+gemini_model = "gemini-1.5-flash"  # standard fast model
 
 try:
-    from google import genai
-    from google.genai import types
+    import google.generativeai as google_genai
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if api_key:
-        gemini_client = genai.Client(api_key=api_key)
-        logger.info("Initialized Google GenAI client successfully.")
+        google_genai.configure(api_key=api_key)
+        gemini_client = "configured"
+        logger.info("Initialized Google GenerativeAI client successfully.")
     else:
-        logger.warning("No GEMINI_API_KEY or GOOGLE_API_KEY found. Checking google-generativeai...")
+        logger.warning("No GEMINI_API_KEY or GOOGLE_API_KEY found. Will use simulated responses.")
 except Exception as e:
-    logger.warning(f"Could not initialize google-genai client ({e}). Checking google-generativeai...")
+    logger.warning(f"Could not initialize google-generativeai client ({e}). Will use simulated responses.")
 
-# Legacy Gemini Client
-try:
-    if not gemini_client:
-        import google.generativeai as google_genai_legacy
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        if api_key:
-            google_genai_legacy.configure(api_key=api_key)
-            gemini_client = "legacy"
-            logger.info("Initialized legacy google-generativeai client successfully.")
-except Exception as e2:
-    logger.warning(f"Could not initialize legacy client ({e2}).")
 
 # Initialize Groq Client
 groq_client = None
@@ -137,30 +126,13 @@ def call_llm(prompt: str, response_schema: Any = None) -> str:
     # 1. Try Gemini first if keys are present
     if has_gemini and gemini_client:
         try:
-            if gemini_client == "legacy":
-                import google.generativeai as google_genai_legacy
-                model = google_genai_legacy.GenerativeModel(
-                    model_name="gemini-1.5-flash",
-                    generation_config={"response_mime_type": "application/json"} if response_schema else None
-                )
-                response = model.generate_content(prompt)
-                return response.text
-            else:
-                if response_schema:
-                    response = gemini_client.models.generate_content(
-                        model=gemini_model,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            response_schema=response_schema
-                        )
-                    )
-                else:
-                    response = gemini_client.models.generate_content(
-                        model=gemini_model,
-                        contents=prompt
-                    )
-                return response.text
+            import google.generativeai as google_genai
+            model = google_genai.GenerativeModel(
+                model_name=gemini_model,
+                generation_config={"response_mime_type": "application/json"} if response_schema else None
+            )
+            response = model.generate_content(prompt)
+            return response.text
         except Exception as gemini_err:
             logger.error(f"Gemini API call failed: {gemini_err}. Attempting Groq fallback...")
             if has_groq and groq_client:
@@ -179,7 +151,6 @@ def call_llm(prompt: str, response_schema: Any = None) -> str:
 
 def get_simulated_response(prompt: str, response_schema: Any) -> str:
     """Provides high-quality, topic-specific simulation data when Gemini keys are missing."""
-    import re
     # Extract the user query from the prompt template to prevent matching template words like "developer"
     query_match = re.search(r'query:?\s*"([^"]+)"|regarding:?\s*"([^"]+)"|about:?\s*"([^"]+)"', prompt)
     query_text = ""
@@ -733,19 +704,21 @@ def fact_checking_agent(query: str, comments: List[Dict[str, Any]]) -> List[Dict
         
     identify_prompt = f"""
     Identify the top 2 key technical claims or factual assertions made in these comments regarding: "{query}".
-    Return them as a simple JSON list of strings, for example: ["claim 1", "claim 2"]. 
+    Return them as a simple JSON list of strings, for example: ["claim 1", "claim 2"].
     Only return technical or factual assertions that can be checked (e.g. 'RTX 4090 laptop has 16GB VRAM'). Do not return general opinions.
     """
-    
+
     claims = []
     try:
         if gemini_client or groq_client:
             res_text = call_llm(identify_prompt)
             # Find JSON block in output
-            import re
             match = re.search(r'\[.*\]', res_text.replace('\n', ' '))
             if match:
-                claims = json.loads(match.group(0))
+                try:
+                    claims = json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse claims JSON: {match.group(0)}")
         else:
             # Simulated claims based on query
             if any(w in query.lower() for w in ["laptop", "macbook", "rtx", "ollama", "gpu", "vram"]):
