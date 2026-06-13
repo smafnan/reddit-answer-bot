@@ -13,3 +13,7 @@ frontend/.vite/
 *.log
 *.err
 .DS_Store
+
+# Netlify functions cache
+netlify/functions/__pycache__/
+netlify/functions/*.pyc

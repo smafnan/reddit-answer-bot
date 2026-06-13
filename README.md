@@ -151,6 +151,49 @@ Without API keys, the system uses intelligent simulated responses for testing an
 
 ---
 
+## Deploy to Netlify (Frontend + Backend)
+
+This project ships with a `netlify.toml` and a Mangum-powered serverless function that wraps the FastAPI backend, so the whole app deploys to Netlify in one go.
+
+### One-click Deploy
+
+[![Deploy to Netlify](https://www.netlify.com/img/deploy/button.svg)](https://app.netlify.com/start/deploy?repository=https://github.com/smafnan/reddit-answer-bot)
+
+### Manual Setup
+
+| Setting | Value |
+|---------|-------|
+| **Branch to deploy** | `main` |
+| **Base directory** | *(leave empty — root)* |
+| **Build command** | `cd frontend && npm run build` |
+| **Publish directory** | `frontend/dist` |
+| **Functions directory** | `netlify/functions` |
+
+### Required Environment Variables
+
+Set these in **Netlify → Site settings → Environment variables**:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GROQ_API_KEY` | No (fallback to simulated) | Get one free at [console.groq.com](https://console.groq.com) |
+| `GEMINI_API_KEY` | No | Google Gemini API key |
+| `REDDIT_CLIENT_ID` | No | Reddit app client ID |
+| `REDDIT_CLIENT_SECRET` | No | Reddit app client secret |
+
+### How it works
+
+```
+User → Netlify CDN
+         ├── /api/* → /.netlify/functions/api/:splat  (FastAPI via Mangum)
+         └── /*     → /index.html                      (React SPA)
+```
+
+The `netlify/functions/api.py` handler wraps the FastAPI app using `Mangum`, making the entire 7-agent pipeline available as a serverless function. The report data directory uses `/tmp/` on Netlify (reports persist only during a single function invocation).
+
+> **Note:** The streaming `/api/query` SSE endpoint uses long-lived connections. Netlify free-tier functions have a 10-second timeout. For production use, consider upgrading to a Netlify plan with longer timeout or deploying the backend separately on Railway/Render.
+
+---
+
 ## License
 
 MIT License — see [LICENSE](LICENSE).
