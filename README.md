@@ -165,7 +165,7 @@ This project ships with a `netlify.toml` and a Mangum-powered serverless functio
 |---------|-------|
 | **Branch to deploy** | `main` |
 | **Base directory** | *(leave empty — root)* |
-| **Build command** | `cd frontend && npm run build` |
+| **Build command** | `cd frontend && npm ci && npm run build` |
 | **Publish directory** | `frontend/dist` |
 | **Functions directory** | `netlify/functions` |
 
