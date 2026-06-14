@@ -1,5 +1,5 @@
 [build]
-  command = "cp -r backend netlify/functions/backend && cd frontend && npm ci && npm run build"
+  command = "rm -rf netlify/functions/backend && cp -r backend netlify/functions/ && cd frontend && npm ci && npm run build"
   publish = "frontend/dist"
   functions = "netlify/functions"
 
