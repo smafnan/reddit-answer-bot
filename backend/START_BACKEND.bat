@@ -1,5 +1,5 @@
 @echo off
-cd /d "D:\dev\Kids Dev\reddit-answer-bot\backend"
+cd /d "%~dp0"
 echo.
 echo ============================================================
 echo Starting Reddit Intelligence Engine Backend...

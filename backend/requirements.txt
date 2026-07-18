@@ -1,13 +1,13 @@
-fastapi
-uvicorn
-langgraph
-google-generativeai
-praw
-qdrant-client
-duckduckgo-search
-pydantic
-python-dotenv
-groq
-openai
-requests
-
+# Pinned to tested versions (compatible-release pins allow patch updates).
+fastapi~=0.139.2
+uvicorn~=0.51.0
+langgraph~=1.2.9
+google-generativeai~=0.8.6
+praw~=8.0.2
+duckduckgo-search~=8.1.1
+pydantic~=2.13.4
+python-dotenv~=1.2.2
+groq~=1.5.0
+openai~=2.46.0
+anthropic~=0.117.0
+requests~=2.34.2

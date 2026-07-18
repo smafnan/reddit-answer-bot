@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 // API Base configuration
-const API_BASE = (import.meta as any).env?.VITE_API_URL 
-  || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-    ? 'http://localhost:8000' 
+const API_BASE = import.meta.env.VITE_API_URL
+  || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:8000'
     : '');
 
 const LLM_PROVIDERS: Record<string, { label: string; keyLabel: string; models: string[]; placeholder: string }> = {
@@ -49,9 +49,9 @@ interface SavedReportSummary {
 
 interface ProgressStep {
   step: string;
+  status?: 'running' | 'done';
   message: string;
   details: string;
-  expanded_queries?: string[];
 }
 
 interface SourceThread {
@@ -103,6 +103,8 @@ interface IntelligenceReport {
   id: string;
   query: string;
   timestamp: string;
+  llm_mode?: 'live' | 'simulated';
+  provider?: string | null;
   synthesis: {
     consensus_summary: string;
     confidence_score: number;
@@ -213,12 +215,8 @@ function ForceGraph({ graphData, floating }: { graphData: { nodes: GraphNode[]; 
 
         // 2. Calculate attraction forces (connected links pull together)
         edges.forEach((edge) => {
-          // Resolve string IDs to references
-          const sourceId = typeof edge.source === 'string' ? edge.source : (edge.source as any).id;
-          const targetId = typeof edge.target === 'string' ? edge.target : (edge.target as any).id;
-          
-          const sourceNode = nodeMap.get(sourceId);
-          const targetNode = nodeMap.get(targetId);
+          const sourceNode = nodeMap.get(edge.source);
+          const targetNode = nodeMap.get(edge.target);
 
           if (sourceNode && targetNode) {
             const dx = targetNode.x! - sourceNode.x!;
@@ -343,11 +341,8 @@ function ForceGraph({ graphData, floating }: { graphData: { nodes: GraphNode[]; 
 
         {/* Render connections */}
         {edges.map((edge, i) => {
-          const sId = typeof edge.source === 'string' ? edge.source : (edge.source as any).id;
-          const tId = typeof edge.target === 'string' ? edge.target : (edge.target as any).id;
-          
-          const sNode = nodes.find((n) => n.id === sId);
-          const tNode = nodes.find((n) => n.id === tId);
+          const sNode = nodes.find((n) => n.id === edge.source);
+          const tNode = nodes.find((n) => n.id === edge.target);
 
           if (!sNode || !tNode) return null;
 
@@ -430,7 +425,8 @@ export default function App() {
   const [activeReport, setActiveReport] = useState<IntelligenceReport | null>(null);
   const [running, setRunning] = useState(false);
   const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
-  const [activeStep, setActiveStep] = useState<string>('');
+  const [completedSteps, setCompletedSteps] = useState<string[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
   const [activeTab, setActiveTab] = useState<'synthesis' | 'perspectives' | 'debates' | 'factchecks' | 'comments'>('synthesis');
   const [error, setError] = useState<string | null>(null);
 
@@ -479,10 +475,18 @@ export default function App() {
     about: false,
   });
 
-  // Load queries history on startup
+  // Abort any in-flight pipeline stream on unmount
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  // Close the settings modal with Escape
   useEffect(() => {
-    loadReports();
-  }, []);
+    if (!settingsOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSettingsOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [settingsOpen]);
 
   // Set theme attribute
   useEffect(() => {
@@ -522,6 +526,12 @@ export default function App() {
     }
   };
 
+  // Load queries history on startup (async fetch — state updates land later)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadReports();
+  }, []);
+
   const deleteSingleReport = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (window.confirm("Are you sure you want to delete this saved report?")) {
@@ -559,13 +569,19 @@ export default function App() {
 
   const triggerPipeline = (searchText: string) => {
     if (!searchText.trim()) return;
+
+    // Cancel any pipeline run that is still streaming
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setQuery(searchText);
     setRunning(true);
     setError(null);
     setActiveReport(null);
     setProgressSteps([]);
-    setActiveStep('query_expansion');
-    
+    setCompletedSteps([]);
+
     // In Win98, bring the Report/Stepper window to the front
     if (theme === 'win98') {
       setWin98Windows(p => ({ ...p, search: false }));
@@ -574,59 +590,87 @@ export default function App() {
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     const resolvedProvider = provider === 'custom' ? (customProviderName || 'openai') : provider;
     const resolvedModel = provider === 'custom' ? customModelName : model;
-    const params = new URLSearchParams({ q: searchText });
-    if (apiKey) params.set('api_key', apiKey);
-    if (resolvedProvider) params.set('provider', resolvedProvider);
-    if (resolvedModel) params.set('model', resolvedModel);
-    const queryString = params.toString();
+    // API key travels in the POST body — never in the URL, where it would
+    // end up in server logs and browser history.
+    const payload = {
+      q: searchText,
+      api_key: apiKey || null,
+      provider: resolvedProvider || null,
+      model: resolvedModel || null,
+    };
+
+    const handleEvent = (data: ProgressStep & { data?: IntelligenceReport }) => {
+      if (data.step === 'completed' && data.data) {
+        setActiveReport(data.data);
+        setRunning(false);
+        loadReports();
+      } else if (data.step === 'failed') {
+        setError(data.details || "Pipeline run failed.");
+        setRunning(false);
+      } else {
+        setProgressSteps((prev) => {
+          const idx = prev.findIndex((s) => s.step === data.step);
+          if (idx !== -1) {
+            const copy = [...prev];
+            copy[idx] = data;
+            return copy;
+          }
+          return [...prev, data];
+        });
+        if (data.status === 'done') {
+          setCompletedSteps((prev) => (prev.includes(data.step) ? prev : [...prev, data.step]));
+        }
+      }
+    };
 
     if (isLocal) {
-      // Local dev: use SSE streaming
-      const eventSource = new EventSource(`${API_BASE}/api/query?${queryString}`);
-
-      eventSource.onmessage = (event) => {
+      // Local dev: POST + SSE streaming, parsed from the fetch body
+      (async () => {
         try {
-          const data = JSON.parse(event.data);
-
-          if (data.step === 'completed') {
-            setActiveReport(data.data);
-            setRunning(false);
-            eventSource.close();
-            loadReports();
-          } else if (data.step === 'failed') {
-            setError(data.details || "Pipeline run failed.");
-            setRunning(false);
-            eventSource.close();
-          } else {
-            setProgressSteps((prev) => {
-              const idx = prev.findIndex((s) => s.step === data.step);
-              if (idx !== -1) {
-                const copy = [...prev];
-                copy[idx] = data;
-                return copy;
-              } else {
-                return [...prev, data];
+          const res = await fetch(`${API_BASE}/api/query`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+          if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop() || '';
+            for (const part of parts) {
+              const line = part.trim();
+              if (!line.startsWith('data: ')) continue;
+              try {
+                handleEvent(JSON.parse(line.slice(6)));
+              } catch (err) {
+                console.error('SSE parse error', err);
               }
-            });
-            setActiveStep(data.step);
+            }
           }
         } catch (err) {
-          console.error("SSE parse error", err);
+          if ((err as Error)?.name === 'AbortError') return;
+          console.error('Stream error', err);
+          setError('Lost connection to server stream.');
+          setRunning(false);
         }
-      };
-
-      eventSource.onerror = (err) => {
-        console.error("SSE connection error", err);
-        setError("Lost connection to server stream.");
-        setRunning(false);
-        eventSource.close();
-      };
+      })();
     } else {
-      // Production (Netlify/Render): use sync endpoint
+      // Production (Netlify/Render): one-shot sync endpoint
       setProgressSteps([
-        { step: 'query_expansion', message: 'Running analysis...', details: 'Processing your question' }
+        { step: 'query_expansion', status: 'running', message: 'Running analysis...', details: 'Processing your question' }
       ]);
-      fetch(`${API_BASE}/api/query-sync?${queryString}`)
+      fetch(`${API_BASE}/api/query-sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      })
         .then(async (res) => {
           if (!res.ok) {
             const errText = await res.text();
@@ -640,6 +684,7 @@ export default function App() {
           loadReports();
         })
         .catch((err) => {
+          if (err?.name === 'AbortError') return;
           setError(err.message || "Failed to process query.");
           setRunning(false);
         });
@@ -647,6 +692,7 @@ export default function App() {
   };
 
   const selectReport = async (id: string) => {
+    abortRef.current?.abort();
     setRunning(false);
     setError(null);
     setSidebarOpen(false);
@@ -707,25 +753,33 @@ export default function App() {
     }
   };
 
-  // Stepper UI Nodes Config
+  // Stepper UI Nodes Config — mirrors the LangGraph topology; the three
+  // analysis agents run as a parallel fan-out on the backend.
   const PIPELINE_NODES = [
     { key: 'query_expansion', label: 'Query Expansion Agent', desc: 'Agent 1: Generates alternative search vectors' },
-    { key: 'retrieval', label: 'Reddit Retrieval Agent', desc: 'Agent 2: Scrapes comments and metadata' },
-    { key: 'spam_filtering', label: 'Spam Detection Agent', desc: 'Agent 3 & 4: Filters bots, memes & scores credibility' },
-    { key: 'perspective_extraction', label: 'Perspective Analysis Agent', desc: 'Agent 5 & 6: Groups consensus and disagreements' },
-    { key: 'knowledge_graph_builder', label: 'Knowledge Graph Agent', desc: 'Agent 7: Maps entities and relationships' },
-    { key: 'fact_checking', label: 'Fact-Check Agent', desc: 'Agent 9: Verifies technical claims against search indexes' },
-    { key: 'synthesizing', label: 'Knowledge Synthesizer', desc: 'Agent 8: Formulates consensus report' },
+    { key: 'retrieval', label: 'Reddit Retrieval Agent', desc: 'Agent 2: Fetches comments and metadata' },
+    { key: 'spam_filtering', label: 'Spam Detection Agent', desc: 'Agent 3: Filters bots & scores credibility' },
+    { key: 'perspective_extraction', label: 'Perspective Analysis Agent', desc: 'Agent 4: Groups consensus and disagreements (runs in parallel)' },
+    { key: 'knowledge_graph_builder', label: 'Knowledge Graph Agent', desc: 'Agent 5: Maps entities and relationships (runs in parallel)' },
+    { key: 'fact_checking', label: 'Fact-Check Agent', desc: 'Agent 6: Verifies technical claims against search (runs in parallel)' },
+    { key: 'synthesizer', label: 'Knowledge Synthesizer', desc: 'Agent 7: Formulates consensus report' },
+  ];
+
+  const PIPELINE_STAGES: string[][] = [
+    ['query_expansion'],
+    ['retrieval'],
+    ['spam_filtering'],
+    ['perspective_extraction', 'knowledge_graph_builder', 'fact_checking'],
+    ['synthesizer'],
   ];
 
   const getStepStatus = (nodeKey: string) => {
-    const activeIndex = PIPELINE_NODES.findIndex(n => n.key === activeStep);
-    const nodeIndex = PIPELINE_NODES.findIndex(n => n.key === nodeKey);
-
-    const stepInfo = progressSteps.find((s) => s.step === nodeKey);
-
-    if (nodeIndex < activeIndex) return { status: 'completed', info: stepInfo };
-    if (nodeKey === activeStep) return { status: 'active', info: stepInfo };
+    const stepInfo = progressSteps.find((s) => s.step === nodeKey) || null;
+    if (completedSteps.includes(nodeKey)) return { status: 'completed', info: stepInfo };
+    if (running) {
+      const activeStage = PIPELINE_STAGES.find((stage) => stage.some((k) => !completedSteps.includes(k)));
+      if (activeStage && activeStage.includes(nodeKey)) return { status: 'active', info: stepInfo };
+    }
     return { status: 'pending', info: null };
   };
 
@@ -918,6 +972,7 @@ export default function App() {
                 <div className="win98-frame-btn">_</div>
                 <div className="win98-frame-btn">□</div>
                 <div className="win98-frame-btn" onClick={() => {
+                  abortRef.current?.abort();
                   setRunning(false);
                   setActiveReport(null);
                 }}>X</div>
@@ -958,15 +1013,18 @@ export default function App() {
                       <p style={{ margin: 0, fontSize: '11px', color: '#000' }}>{activeReport.synthesis.consensus_summary}</p>
                       <div style={{ marginTop: '6px', fontSize: '10px', fontWeight: 'bold', color: '#000080' }}>
                         Confidence Level: {Math.round(activeReport.synthesis.confidence_score * 100)}%
+                        {activeReport.llm_mode === 'simulated' && (
+                          <span style={{ marginLeft: '8px', color: '#800000' }}>⚠ Demo data — connect an API key for real analysis</span>
+                        )}
                       </div>
                     </div>
 
                     <nav className="tabs-nav" style={{ display: 'flex', gap: '2px', borderBottom: '1px solid #808080', paddingBottom: '2px' }}>
-                      {['synthesis', 'perspectives', 'debates', 'factchecks', 'comments'].map((tab) => (
+                      {(['synthesis', 'perspectives', 'debates', 'factchecks', 'comments'] as const).map((tab) => (
                         <button
                           key={tab}
                           className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
-                          onClick={() => setActiveTab(tab as any)}
+                          onClick={() => setActiveTab(tab)}
                           style={{ fontSize: '10px', padding: '2px 8px', cursor: 'pointer' }}
                         >
                           {tab.toUpperCase()}
@@ -1206,7 +1264,12 @@ export default function App() {
       </div>
 
       {/* Mobile sidebar toggle */}
-      <button className="sidebar-toggle" onClick={() => setSidebarOpen(!sidebarOpen)}>
+      <button
+        className="sidebar-toggle"
+        onClick={() => setSidebarOpen(!sidebarOpen)}
+        aria-label={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
+        aria-expanded={sidebarOpen}
+      >
         {sidebarOpen ? '✕' : '☰'}
       </button>
 
@@ -1262,6 +1325,7 @@ export default function App() {
                 <button
                   onClick={(e) => deleteSingleReport(report.id, e)}
                   title="Delete Report"
+                  aria-label={`Delete report: ${report.query}`}
                   style={{
                     position: 'absolute',
                     top: '50%',
@@ -1293,7 +1357,7 @@ export default function App() {
             <span>Theme:</span>
             <select
               value={theme}
-              onChange={(e) => setTheme(e.target.value as any)}
+              onChange={(e) => setTheme(e.target.value as 'dark' | 'light' | 'win98')}
               style={{
                 background: 'var(--bg-panel)',
                 color: 'var(--text-bright)',
@@ -1350,13 +1414,13 @@ export default function App() {
         {/* Settings Modal */}
         {settingsOpen && (
           <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
-            <div className="settings-modal glass-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="settings-modal glass-panel" role="dialog" aria-modal="true" aria-label="LLM Configuration" onClick={(e) => e.stopPropagation()}>
               <div className="settings-header">
                 <div>
                   <h3>LLM Configuration</h3>
                   <p className="settings-subtitle">Connect your own AI provider for real analysis</p>
                 </div>
-                <button className="settings-close-btn" onClick={() => setSettingsOpen(false)}>✕</button>
+                <button className="settings-close-btn" onClick={() => setSettingsOpen(false)} aria-label="Close settings">✕</button>
               </div>
 
               <div className="settings-body">
@@ -1735,6 +1799,23 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+                    {activeReport.llm_mode === 'simulated' && (
+                      <div className="metric-item">
+                        <span
+                          style={{
+                            fontSize: '0.75rem',
+                            fontWeight: 700,
+                            color: '#b45309',
+                            background: 'rgba(245, 158, 11, 0.12)',
+                            border: '1px solid rgba(245, 158, 11, 0.4)',
+                            borderRadius: '6px',
+                            padding: '4px 10px',
+                          }}
+                        >
+                          ⚠ Demo data — connect an API key for real analysis
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
 

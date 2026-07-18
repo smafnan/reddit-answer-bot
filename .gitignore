@@ -1,8 +1,11 @@
 # Python
 backend/__pycache__/
+backend/tests/__pycache__/
 backend/*.pyc
 backend/.env
 backend/data/*.json
+.venv/
+.pytest_cache/
 
 # Node / React
 frontend/node_modules/
@@ -17,3 +20,4 @@ frontend/.vite/
 # Netlify functions cache
 netlify/functions/__pycache__/
 netlify/functions/*.pyc
+netlify/functions/backend/

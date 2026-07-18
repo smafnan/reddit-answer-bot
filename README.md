@@ -1,45 +1,47 @@
 # Reddit Intelligence Engine
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue?logo=python)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
+[![CI](https://github.com/smafnan/reddit-answer-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/smafnan/reddit-answer-bot/actions/workflows/ci.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue?logo=python)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.139%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)](https://react.dev)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![GitHub release](https://img.shields.io/badge/release-v1.0.0-blue?logo=github)](https://github.com/smafnan/reddit-answer-bot/releases/tag/v1.0.0)
 
-A multi-agent system that synthesizes community consensus from Reddit discussions. Ask any question and get an intelligence report — complete with perspectives, fact-checks, contradictions, entity graphs, and a confidence-scored synthesis.
+A multi-agent system that synthesizes community consensus from Reddit discussions. Ask any question and get an intelligence report — perspectives, fact-checks, contradictions, an entity graph, and a confidence-scored synthesis.
 
 ---
 
 ## Pipeline Architecture
 
-The system runs **7 specialized agents** in sequence, with three agents running in parallel for maximum efficiency:
+Seven agents run as a compiled **LangGraph** `StateGraph`. The three analysis agents execute as a **parallel fan-out** in a single superstep, then fan back in to the synthesizer:
 
-<p align="center">
-  <img src="./reddit_intelligence_pipeline.svg" alt="7-Agent Pipeline Architecture" width="100%"/>
-</p>
+```
+query_expansion → retrieval → spam_filtering ─┬─ perspective_extraction ─┐
+                                              ├─ knowledge_graph_builder ├─→ synthesizer
+                                              └─ fact_checking ──────────┘
+```
 
 | # | Agent | Function |
 |---|-------|----------|
-| 1 | **Query Expansion** | Generates 8–10 search angles covering multiple perspectives |
-| 2 | **Reddit Retrieval** | Fetches comments via PRAW → DuckDuckGo → Scraping → Mock fallback |
-| 3 | **Spam & Quality Filter** | 2-stage heuristics + LLM evaluation; removes bots, low-effort, deleted posts |
-| 4 | **Perspective Analysis** | Extracts competing viewpoints and identifies contradictions |
-| 5 | **Knowledge Graph** | Maps entities and relationships into a semantic network |
-| 6 | **Fact-Check** | Verifies claims against live web search; marks Verified/Disputed/Debunked |
-| 7 | **Consensus Synthesis** | Combines all outputs into a unified, confidence-scored intelligence report |
+| 1 | **Query Expansion** | Generates 6–10 search angles covering multiple perspectives |
+| 2 | **Reddit Retrieval** | Fetches comments via PRAW → DuckDuckGo → old.reddit scraping → mock fallback |
+| 3 | **Spam & Quality Filter** | 2-stage: fast heuristics, then batched LLM evaluation |
+| 4 | **Perspective Analysis** ⚡ | Extracts competing viewpoints and contradictions *(parallel)* |
+| 5 | **Knowledge Graph** ⚡ | Maps entities and relationships into a semantic network *(parallel)* |
+| 6 | **Fact-Check** ⚡ | Verifies claims against live web search *(parallel)* |
+| 7 | **Consensus Synthesis** | Combines all outputs into a confidence-scored report |
+
+Every LLM response is validated against a Pydantic schema; scraped content is delimited as untrusted data in prompts to resist prompt injection; a failed agent degrades gracefully instead of aborting the run.
 
 ---
 
 ## Features
 
-- **7-Agent LangGraph pipeline** with real-time SSE streaming
-- **Live knowledge graph** — interactive, force-directed, perpetually floating nodes
-- **Three themes** — Dark Mode, Light Mode, and a nostalgic **Windows 98 desktop**
-- **Fully responsive** — works on iOS, Android, tablets, and desktop
-- **Collapsible panels** — collapse the sidebar and source threads for focused reading
-- **Multiple retrieval backends** — PRAW, DuckDuckGo search, old.reddit.com scraping
-- **Hybrid LLM support** — Groq (default) with Gemini fallback
-- **Works without API keys** — falls back to intelligent simulated responses
+- **Real LangGraph orchestration** with a parallel analysis fan-out and SSE progress streaming
+- **Live knowledge graph** — interactive, force-directed, dependency-free
+- **Three themes** — Dark, Light, and a full **Windows 98 desktop** simulation
+- **Bring-your-own-key or server keys** — Groq, Gemini, OpenAI, Anthropic, or any OpenAI-compatible endpoint; keys travel in the POST body, never in URLs
+- **Honest demo mode** — without any API key, the engine returns clearly-labelled simulated sample data (badged in the UI; fact-checks are marked `[Demo sample]` and never fabricate verification verdicts)
+- **Hardened API** — per-IP rate limiting, input length caps, exact-ID report operations, optional admin token for destructive endpoints
 
 ---
 
@@ -49,31 +51,31 @@ The system runs **7 specialized agents** in sequence, with three agents running 
 
 ```bash
 cd backend
+python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Copy and configure environment
-cp .env.template .env
-# Edit .env with your API keys (Groq or Gemini)
-
-python main.py
+cp .env.template .env      # optional: add a GROQ_API_KEY (or Gemini/OpenAI/Anthropic)
+python main.py             # serves http://localhost:8000
 ```
 
-The API server starts at `http://localhost:8000`.
+Server-side keys in `.env` are picked up automatically; users can also paste a key in the UI, which overrides the server key for that request. With no key at all, the engine runs in labelled demo mode.
 
 ### Frontend
-
-**Option A — Direct HTML (no setup):**
-Just open `INTERACTIVE_UI.html` in your browser while the backend runs.
-
-**Option B — React app:**
 
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev                # opens http://localhost:5173
 ```
 
-Opens at `http://localhost:5173`.
+### Tests
+
+```bash
+pip install -r backend/requirements-dev.txt
+python -m pytest backend/tests -v
+```
+
+The suite runs entirely offline (simulated mode) and is enforced in CI along with frontend lint + build.
 
 ---
 
@@ -82,143 +84,73 @@ Opens at `http://localhost:5173`.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/` | Health check |
-| `GET` | `/api/query?q=QUESTION` | SSE stream of agent progress → final report |
-| `GET` | `/api/reports` | List all saved reports |
-| `GET` | `/api/reports/{id}` | Get a specific report |
-| `DELETE` | `/api/reports/{id}` | Delete a report |
-| `DELETE` | `/api/reports` | Delete all reports |
-
-### Example query
+| `POST` | `/api/query` | SSE stream of agent progress → final report. Body: `{q, api_key?, provider?, model?}` |
+| `POST` | `/api/query-sync` | Same pipeline, single JSON response |
+| `GET` | `/api/query?q=…` | Streaming demo variant for curl (server keys / demo mode only — **no** `api_key` param by design) |
+| `GET` | `/api/reports` | List saved report summaries |
+| `GET` | `/api/reports/{id}` | Get a report (exact ID match) |
+| `DELETE` | `/api/reports/{id}` | Delete a report (requires `X-Admin-Token` if `ADMIN_TOKEN` is set) |
+| `DELETE` | `/api/reports` | Delete all reports (same admin guard) |
 
 ```bash
-curl -N "http://localhost:8000/api/query?q=Is%20a%20CS%20degree%20worth%20it?"
+curl -N -X POST http://localhost:8000/api/query \
+  -H 'Content-Type: application/json' \
+  -d '{"q": "Is a CS degree worth it?"}'
 ```
 
-Returns a Server-Sent Events stream:
-
-```
-data: {"step": "query_expansion", "message": "Generating alternative search angles..."}
-data: {"step": "retrieval", "message": "Querying Reddit discussions..."}
-...
-data: {"step": "completed", "data": { "... full report ..." }}
-```
-
----
-
-## Themes
-
-The UI supports three themes selectable from the sidebar footer:
-
-| Theme | Description |
-|-------|-------------|
-| **Dark Mode** | Sleek, modern dark UI with neon violet/cyan accents |
-| **Light Mode** | Clean light theme with improved contrast for readability |
-| **Windows 98** | Full retro desktop simulation — start menu, taskbar, window frames, classic grey palette |
-
-> **Tip:** In Dark or Light mode, a nostalgic prompt suggests trying Windows 98 mode. Dismiss it to never see it again.
+Streamed events: `{"step": "<node>", "status": "running|done", "message", "details"}` per agent, then `{"step": "completed", "data": {…report…}}`. The report includes `llm_mode: "live" | "simulated"` so clients can badge demo data.
 
 ---
 
 ## Configuration
 
-Copy `backend/.env.template` to `backend/.env` and set these optional keys:
+All variables are optional (see `backend/.env.template`):
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GROQ_API_KEY` | No (fallback to simulated) | Groq LLM (fast, free tier available) |
-| `GEMINI_API_KEY` | No | Google Gemini LLM |
-| `REDDIT_CLIENT_ID` | No | Reddit API client ID |
-| `REDDIT_CLIENT_SECRET` | No | Reddit API client secret |
-| `PORT` | No | Server port (default: 8000) |
-
-Without API keys, the system uses intelligent simulated responses for testing and demo.
-
----
-
-## Tech Stack
-
-**Backend**
-- FastAPI + Uvicorn
-- LangGraph (agent orchestration)
-- Groq / Google GenerativeAI
-- PRAW / DuckDuckGo-Search / Requests
-
-**Frontend**
-- React 19 + TypeScript
-- Vite 8
-- Custom force-directed physics graph (no external libs)
-- CSS-only theming system
+| Variable | Description |
+|----------|-------------|
+| `GROQ_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Server-side LLM keys; first one found is used when a request doesn't supply its own |
+| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | Enables PRAW retrieval (otherwise DuckDuckGo + reddit `.json` fallback) |
+| `RATE_LIMIT` | Query rate limit per client IP, e.g. `20/60` (20 requests / 60 s) |
+| `ADMIN_TOKEN` | If set, destructive report endpoints require this in `X-Admin-Token` |
+| `DATA_DIR` | Report storage directory (auto-falls back to the OS temp dir on read-only hosts) |
+| `PORT` | Server port (default 8000) |
 
 ---
 
 ## Deployment
 
-### Why the live site can't reach the backend
+### Option A — All on Netlify (demo)
 
-Netlify free-tier functions have a **10-second timeout** and don't support Server-Sent Events (SSE) streaming properly. The pipeline needs 2–5 seconds in simulated mode or 15–30 seconds with a real LLM. The frontend now auto-detects the environment:
-
-| Environment | Endpoint | Behaviour |
-|-------------|----------|-----------|
-| `localhost` (dev) | `/api/query` (SSE) | Real-time streaming with progress steps |
-| Production | `/api/query-sync` (JSON) | One-shot fetch — show report when done |
-
-### Option A — All on Netlify (recommended for demo)
-
-The backend runs as a Netlify Function via Mangum. Use the sync endpoint — works within the 10 s timeout for simulated mode.
-
-**Settings:**
+The backend runs as a Netlify Function via Mangum. Serverless constraints apply: the function filesystem is read-only (reports persist to `/tmp`, which is ephemeral) and the free tier has a ~10 s timeout — fine for demo mode, tight for live LLM runs. The frontend auto-detects production and uses the one-shot `/api/query-sync` endpoint.
 
 | Setting | Value |
 |---------|-------|
-| **Branch to deploy** | `main` |
-| **Base directory** | *(leave empty)* |
-| **Build command** | `cd frontend && npm ci && npm run build` |
-| **Publish directory** | `frontend/dist` |
-| **Functions directory** | `netlify/functions` |
+| Build command | *(from `netlify.toml`)* |
+| Publish directory | `frontend/dist` |
+| Functions directory | `netlify/functions` |
+| Env vars | `GROQ_API_KEY` (optional — enables live analysis server-side) |
 
-**Environment variables** (Netlify → Site settings → Environment variables):
+### Option B — Frontend on Netlify, backend on Render (recommended for live use)
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GROQ_API_KEY` | No (simulated fallback) | Get one free at [console.groq.com](https://console.groq.com) |
+Render has no request timeout and a persistent-enough disk for report storage.
 
-### Option B — Frontend on Netlify, Backend on Render (recommended for production)
+1. [dashboard.render.com](https://dashboard.render.com) → **New +** → **Web Service** → connect this repo
+2. Root directory `backend`, build `pip install -r requirements.txt`, start `uvicorn main:app --host 0.0.0.0 --port $PORT`
+3. Add env var `GROQ_API_KEY` (and optionally `ADMIN_TOKEN`)
+4. In Netlify, set `VITE_API_URL` to your Render URL
 
-Deploy the backend on [Render](https://render.com) (free tier — 512 MB RAM, no request timeout) for faster real-LLM responses without the 10 s function limit.
+> Render's free tier spins down after inactivity; the first request after idle takes ~30 s.
 
-**Backend (Render):**
+---
 
-1. Go to [dashboard.render.com](https://dashboard.render.com) → **New +** → **Web Service**
-2. Connect your GitHub repo (`smafnan/reddit-answer-bot`)
-3. Use these settings:
+## Tech Stack
 
-| Setting | Value |
-|---------|-------|
-| **Name** | `reddit-intelligence-api` |
-| **Branch** | `main` |
-| **Root Directory** | `backend` |
-| **Runtime** | `Python 3` |
-| **Build Command** | `pip install -r requirements.txt` |
-| **Start Command** | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
-| **Plan** | **Free** |
+**Backend** — FastAPI · LangGraph (compiled StateGraph, parallel supersteps) · Groq / Gemini / OpenAI / Anthropic SDKs · PRAW · DuckDuckGo Search · Pydantic-validated structured outputs
 
-4. Add environment variable: `GROQ_API_KEY` (same key from your `.env`)
-5. Deploy — Render gives you a URL like `https://reddit-intelligence-api.onrender.com`
-
-**Frontend (Netlify):**
-
-Add an environment variable in **Netlify → Site settings → Environment variables**:
-
-| Key | Value |
-|-----|-------|
-| `VITE_API_URL` | `https://reddit-intelligence-api.onrender.com` |
-
-The frontend will read this variable and send API calls to your Render backend automatically.
-
-> **Tip:** Render's free tier spins down after 15 minutes of inactivity. The first request after idle takes ~30 seconds to wake up. Subsequent requests are instant.
+**Frontend** — React 19 + TypeScript · Vite · custom force-directed physics graph (no chart libraries) · CSS-only theming
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
