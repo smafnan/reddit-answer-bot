@@ -30,7 +30,8 @@ ENV_KEY_ORDER = [
 ENV_KEY_BY_PROVIDER = {provider: env for provider, env in ENV_KEY_ORDER}
 
 DEFAULT_MODELS = {
-    "groq": "llama-3.1-8b-instant",
+    # 70B follows the inline-citation contract far more reliably than 8B.
+    "groq": "llama-3.3-70b-versatile",
     "nvidia": "meta/llama-3.3-70b-instruct",
     "gemini": "gemini-2.0-flash",
     "openai": "gpt-4o-mini",

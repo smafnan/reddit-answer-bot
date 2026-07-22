@@ -71,6 +71,12 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
     return {"retrieval": result, "pack": pack, "signals": signals}
 
 
+def _attempt_answer(state):
+    ans = answer_agent(state["llm"], state["plan"].standalone_question, state["pack"], state["messages"][:-1])
+    raw_grounded = ans.grounded
+    return validate_citations(ans, state["pack"]), raw_grounded
+
+
 def answer_node(state: AgentState) -> Dict[str, Any]:
     logger.info("answer_node")
     plan = state["plan"]
@@ -82,12 +88,19 @@ def answer_node(state: AgentState) -> Dict[str, Any]:
     if gate is not None:
         return {"answer": gate}  # honest refusal, 0 LLM calls
     try:
-        ans = answer_agent(state["llm"], plan.standalone_question, state["pack"], state["messages"][:-1])
+        ans, raw_grounded = _attempt_answer(state)
+        # If the model tried to answer but its citations failed validation
+        # (a formatting flake on weaker models), retry once before giving up.
+        if not ans.grounded and raw_grounded:
+            logger.info("answer citations failed validation; retrying once")
+            retry, _ = _attempt_answer(state)
+            if retry.grounded:
+                ans = retry
     except Exception as exc:
         logger.error("answer failed: %s", exc)
         return {"answer": AnswerOutput(answer_markdown="Something went wrong composing the answer.",
                                        grounded=False, refusal_reason="internal_error")}
-    return {"answer": validate_citations(ans, state["pack"])}
+    return {"answer": ans}
 
 
 # --- Assemble graph ---
