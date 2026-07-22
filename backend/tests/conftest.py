@@ -11,12 +11,13 @@ os.environ.setdefault("DATA_DIR", tempfile.mkdtemp(prefix="reddit-intel-test-"))
 import pytest  # noqa: E402
 
 LLM_ENV_KEYS = ["GROQ_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+REDDIT_ENV_KEYS = ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET", "ALLOW_ANON_REDDIT"]
 
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    """Force deterministic simulated mode: no ambient API keys, no admin token."""
-    for key in LLM_ENV_KEYS + ["ADMIN_TOKEN"]:
+    """Force deterministic offline demo mode: no LLM keys, no Reddit creds, no admin token."""
+    for key in LLM_ENV_KEYS + REDDIT_ENV_KEYS + ["ADMIN_TOKEN"]:
         monkeypatch.delenv(key, raising=False)
 
 

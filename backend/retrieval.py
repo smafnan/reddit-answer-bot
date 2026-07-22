@@ -1,259 +1,294 @@
-import os
-import re
-import urllib.request
+"""Reddit retrieval — the ONLY grounding source for the engine.
+
+Primary path: the official Reddit Data API via PRAW in application-only
+(client_credentials) read-only mode — client_id + client_secret only, no
+username/password. This is the only path trusted for live grounding; anonymous
+`.json` is blocked (HTTP 403) from servers and kept solely as a local-dev
+best-effort fallback.
+
+Every call returns a RetrievalResult carrying a STATUS so the pipeline can tell
+apart genuine zero-coverage ("empty") from an unreachable API ("error") or
+missing credentials ("no_credentials"). That distinction is what lets the engine
+refuse honestly instead of pretending Reddit had nothing.
+"""
+
 import json
 import logging
-from typing import List, Dict, Any
-from duckduckgo_search import DDGS
+import os
+import time
+import urllib.request
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Literal, Optional
 
-try:
-    import requests
-except ImportError:
-    requests = None
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+RetrievalStatus = Literal["ok", "empty", "error", "no_credentials", "demo"]
 
-def search_reddit_via_praw(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
-    """Searches Reddit using PRAW and retrieves thread comments."""
-    client_id = os.environ.get("REDDIT_CLIENT_ID")
-    client_secret = os.environ.get("REDDIT_CLIENT_SECRET")
-    user_agent = os.environ.get("REDDIT_USER_AGENT", "reddit-intel-engine-v1.0")
-    
+BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+@dataclass
+class RetrievalResult:
+    status: RetrievalStatus
+    comments: List[Dict[str, Any]] = field(default_factory=list)
+    # query -> [comment_id, ...] in rank order, so ranking can compute RRF.
+    per_query_rank: Dict[str, List[str]] = field(default_factory=dict)
+
+
+def _local_dev() -> bool:
+    """True when anon .json discovery is explicitly allowed (dev machines)."""
+    return os.environ.get("ALLOW_ANON_REDDIT", "").lower() in ("1", "true", "yes")
+
+
+def _default_user_agent() -> str:
+    return os.environ.get(
+        "REDDIT_USER_AGENT",
+        "server:com.portfolio.redditanswers:v3.0.0 (by /u/reddit_answer_engine)",
+    )
+
+
+def build_reddit(reddit_creds: Optional[Dict[str, str]] = None):
+    """Create an app-only, read-only PRAW client, or return None if no creds.
+
+    Passing only client_id + client_secret makes PRAW use the client_credentials
+    grant, so reddit.read_only is True and no user account is involved.
+    Bring-your-own creds (from the request body) take precedence over env vars.
+    """
+    creds = reddit_creds or {}
+    client_id = creds.get("client_id") or os.environ.get("REDDIT_CLIENT_ID")
+    client_secret = creds.get("client_secret") or os.environ.get("REDDIT_CLIENT_SECRET")
     if not client_id or not client_secret:
-        logger.info("PRAW credentials missing. Skipping PRAW retrieval.")
-        return []
-        
-    logger.info(f"Searching Reddit via PRAW for: '{query}'")
+        return None
     try:
         import praw
+
         reddit = praw.Reddit(
             client_id=client_id,
             client_secret=client_secret,
-            user_agent=user_agent
+            user_agent=_default_user_agent(),
+            ratelimit_seconds=300,  # let PRAW self-throttle within the free tier
+            check_for_updates=False,
         )
-        
-        # Search all subreddits
-        submissions = reddit.subreddit("all").search(query, limit=max_results)
-        comments = []
-        for submission in submissions:
-            logger.info(f"Fetching comments for PRAW thread: {submission.title}")
-            submission.comment_sort = 'top'
-            try:
-                submission.comments.replace_more(limit=0) # get top level comments
-                # Retrieve up to 10 comments per post to keep context small
-                for c in submission.comments[:10]:
-                    if c.body and c.body != "[deleted]" and c.body != "[removed]":
-                        comments.append({
-                            "post_title": submission.title,
-                            "post_url": f"https://reddit.com{submission.permalink}",
-                            "subreddit": submission.subreddit.display_name,
-                            "author": c.author.name if c.author else "[deleted]",
-                            "ups": c.score,
-                            "body": c.body,
-                            "depth": c.depth,
-                            "created_utc": c.created_utc
-                        })
-            except Exception as comment_err:
-                logger.warning(f"Error fetching comments for PRAW post {submission.id}: {comment_err}")
-                
-        return comments
-    except Exception as e:
-        logger.error(f"Error initializing or fetching via PRAW: {e}")
-        return []
+        reddit.read_only = True
+        return reddit
+    except Exception as exc:
+        logger.warning("Could not initialise PRAW client: %s", exc)
+        return None
 
-def fetch_json_from_url(url: str) -> List[Dict[str, Any]]:
-    """Fetches the JSON content of a Reddit post by appending .json to its URL."""
-    # Ensure URL ends in .json
-    clean_url = url.split('?')[0]  # strip query params
-    if not clean_url.endswith('.json'):
-        clean_url = clean_url.rstrip('/') + '.json'
-    
-    # Use urllib with a standard browser user agent to avoid rate limits/blocking
-    req = urllib.request.Request(
-        clean_url, 
-        headers={'User-Agent': USER_AGENT}
-    )
-    
-    try:
-        with urllib.request.urlopen(req, timeout=5) as response:
-            if response.status == 200:
-                return json.loads(response.read().decode('utf-8'))
-    except Exception as e:
-        logger.warning(f"Failed to fetch JSON from {clean_url}: {e}")
-    return []
 
-def extract_comments_from_json(reddit_json: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Extracts comments and post details from Reddit JSON data."""
-    extracted = []
-    if not reddit_json or len(reddit_json) < 2:
-        return extracted
-    
-    # Post detail
-    post_data = {}
-    try:
-        post_child = reddit_json[0].get("data", {}).get("children", [{}])[0].get("data", {})
-        post_data = {
-            "title": post_child.get("title", ""),
-            "author": post_child.get("author", "anonymous"),
-            "selftext": post_child.get("selftext", ""),
-            "ups": post_child.get("ups", 0),
-            "permalink": f"https://reddit.com{post_child.get('permalink', '')}",
-            "subreddit": post_child.get("subreddit", "")
-        }
-    except Exception as e:
-        logger.error(f"Error parsing post data: {e}")
-        
-    # Comments details
-    try:
-        comments_list = reddit_json[1].get("data", {}).get("children", [])
-        for child in comments_list:
-            data = child.get("data", {})
-            body = data.get("body", "")
-            if body and body != "[deleted]" and body != "[removed]":
-                extracted.append({
-                    "post_title": post_data.get("title", ""),
-                    "post_url": post_data.get("permalink", ""),
-                    "subreddit": post_data.get("subreddit", ""),
-                    "author": data.get("author", "anonymous"),
-                    "ups": data.get("ups", 0),
-                    "body": body,
-                    "depth": data.get("depth", 0),
-                    "created_utc": data.get("created_utc", 0)
-                })
-    except Exception as e:
-        logger.error(f"Error parsing comments: {e}")
-        
-    return extracted
-
-def search_reddit_via_ddg(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
-    """Searches Google/DuckDuckGo for site:reddit.com and fetches thread comments."""
-    search_query = f"site:reddit.com {query}"
-    logger.info(f"Searching DuckDuckGo: {search_query}")
-    
-    reddit_threads = []
-    try:
-        with DDGS() as ddgs:
-            results = ddgs.text(search_query, max_results=max_results)
-            for r in results:
-                url = r.get("href", "")
-                # We only want actual comment threads
-                if "/comments/" in url:
-                    reddit_threads.append({
-                        "title": r.get("title", ""),
-                        "url": url,
-                        "snippet": r.get("body", "")
-                    })
-    except Exception as e:
-        logger.error(f"Error during DuckDuckGo search: {e}")
-        
-    all_comments = []
-    
-    # If search failed or returned nothing, return empty
-    if not reddit_threads:
-        return []
-        
-    for thread in reddit_threads:
-        logger.info(f"Fetching thread JSON for: {thread['url']}")
-        json_data = fetch_json_from_url(thread["url"])
-        if json_data:
-            comments = extract_comments_from_json(json_data)
-            all_comments.extend(comments)
-        else:
-            # Fallback to the snippet if json fetch fails
-            all_comments.append({
-                "post_title": thread["title"],
-                "post_url": thread["url"],
-                "subreddit": "unknown",
-                "author": "snippet",
-                "ups": 1,
-                "body": thread["snippet"],
-                "depth": 0,
-                "created_utc": 0
-            })
-            
-    return all_comments
-
-def search_reddit_via_old_scraping(query: str, limit: int = 5) -> List[Dict[str, Any]]:
-    """Search Reddit via old.reddit.com scraping (no API keys needed, fallback from master branch)."""
-    if not requests:
-        logger.warning("requests library not available for old.reddit.com scraping")
-        return []
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+def _normalize_comment(
+    comment_id: str,
+    post_title: str,
+    post_url: str,
+    comment_permalink: str,
+    subreddit: str,
+    author: Optional[str],
+    ups: int,
+    body: str,
+    created_utc: float,
+) -> Optional[Dict[str, Any]]:
+    body = (body or "").strip()
+    if not body or body in ("[deleted]", "[removed]"):
+        return None
+    return {
+        "comment_id": comment_id,
+        "post_title": post_title or "",
+        "post_url": post_url or "",
+        "comment_permalink": comment_permalink or post_url or "",
+        "subreddit": subreddit or "",
+        "author": author or "[deleted]",
+        "ups": int(ups or 0),
+        "body": body,
+        "created_utc": float(created_utc or 0.0),
     }
-    from urllib.parse import quote
 
-    search_url = f"https://old.reddit.com/search?q={quote(query)}&sort=relevance&limit={limit}"
-    results = []
 
-    logger.info(f"Searching old.reddit.com: {search_url}")
+def _collect_comments_from_submission(submission, comments_per_post: int) -> List[Dict[str, Any]]:
+    """Fetch the top comments of one submission (cheap: replace_more(limit=0))."""
+    out: List[Dict[str, Any]] = []
     try:
-        response = requests.get(search_url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            html = response.text
-            blocks = re.findall(
-                r'<div class=" search-result search-result-link[^"]*"[^>]*>.*?</div>\s*</div>',
-                html, re.DOTALL
+        submission.comment_sort = "top"
+        submission.comments.replace_more(limit=0)  # drop 'load more' stubs, no extra requests
+        for c in submission.comments.list()[:comments_per_post]:
+            permalink = f"https://www.reddit.com{getattr(c, 'permalink', '')}"
+            author = getattr(c.author, "name", None) if getattr(c, "author", None) else None
+            norm = _normalize_comment(
+                comment_id=f"t1_{c.id}",
+                post_title=submission.title,
+                post_url=f"https://www.reddit.com{submission.permalink}",
+                comment_permalink=permalink,
+                subreddit=str(submission.subreddit),
+                author=author,
+                ups=getattr(c, "score", 0),
+                body=getattr(c, "body", ""),
+                created_utc=getattr(c, "created_utc", 0.0),
             )
-            for block in blocks[:limit]:
-                title_match = re.search(r'<a\s+href="(https?://[^"]+)"\s+class="search-title[^"]*"[^>]*>(.*?)</a>', block, re.DOTALL)
-                if not title_match:
-                    continue
-                url = title_match.group(1)
-                title = re.sub(r'<[^>]+>', '', title_match.group(2)).strip()
-                title = title.replace("&amp;", "&").replace("&gt;", ">").replace("&lt;", "<").replace("&quot;", '"').replace("&#39;", "'")
-                title = re.sub(r'\s+', ' ', title).strip()
-                
-                body_match = re.search(r'<div class="search-result-body">.*?<div class="md"><p>(.*?)</p>', block, re.DOTALL)
-                body = ""
-                if body_match:
-                    body = re.sub(r'<[^>]+>', '', body_match.group(1))
-                    body = body.replace("&amp;", "&").replace("&gt;", ">").replace("&lt;", "<").replace("&quot;", '"').replace("&#39;", "'")
-                    body = re.sub(r'\s+', ' ', body).strip()
-                    
-                sub_match = re.search(r'/r/(\w+)', url)
-                subreddit = sub_match.group(1) if sub_match else "unknown"
-                
-                results.append({
-                    "post_title": title,
-                    "post_url": url,
-                    "subreddit": subreddit,
-                    "author": "old_scraper",
-                    "ups": 1,
-                    "body": body or "Reddit discussion thread submission.",
-                    "depth": 0,
-                    "created_utc": 0
-                })
-    except Exception as e:
-        logger.error(f"Error scraping old.reddit.com: {e}")
-        
-    return results
+            if norm:
+                out.append(norm)
+    except Exception as exc:
+        logger.warning("Comment fetch failed for %s: %s", getattr(submission, "id", "?"), exc)
+    return out
 
-def search_reddit_hybrid(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
-    """Tries PRAW search first; falls back to combined DuckDuckGo search + old.reddit.com scraping if PRAW fails."""
-    comments = []
+
+def search_reddit(
+    plan,
+    reddit_creds: Optional[Dict[str, str]] = None,
+    posts_per_query: int = 12,
+    top_posts: int = 10,
+    comments_per_post: int = 6,
+) -> RetrievalResult:
+    """Search real Reddit for the plan's queries and collect top comments.
+
+    Returns a RetrievalResult whose status distinguishes real zero-coverage from
+    errors and missing credentials.
+    """
+    reddit = build_reddit(reddit_creds)
+    if reddit is None:
+        if _local_dev():
+            return _anon_json_fallback(plan)
+        return RetrievalResult("no_credentials")
+
+    scope = "+".join(plan.subreddits) if plan.subreddits else "all"
     try:
-        comments = search_reddit_via_praw(query, max_results=max_results)
-    except Exception as e:
-        logger.warning(f"PRAW search failed, falling back to DDG + old.reddit scraping: {e}")
-        
-    if not comments:
-        logger.info("No comments fetched via PRAW. Running fallback retrievers...")
-        ddg_comments = search_reddit_via_ddg(query, max_results=max_results)
-        old_comments = search_reddit_via_old_scraping(query, limit=max_results)
-        comments = ddg_comments + old_comments
-        
-    return comments
+        sub = reddit.subreddit(scope)
+    except Exception as exc:
+        logger.warning("Bad subreddit scope '%s': %s — falling back to r/all", scope, exc)
+        sub = reddit.subreddit("all")
 
-if __name__ == "__main__":
-    # Test retrieval
-    test_results = search_reddit_hybrid("best laptop for Ollama", max_results=2)
-    print(f"Retrieved {len(test_results)} items.")
-    if test_results:
-        print("First result snippet:", test_results[0])
+    queries = plan.search_queries or [plan.standalone_question]
+    submissions_by_id: Dict[str, Any] = {}
+    per_query_post_rank: Dict[str, List[str]] = {}
+    hit_error = False
 
+    for q in queries:
+        if not q:
+            continue
+        order: List[str] = []
+        for attempt in range(3):
+            try:
+                for post in sub.search(q, sort="relevance", time_filter="all", limit=posts_per_query):
+                    submissions_by_id.setdefault(post.id, post)
+                    order.append(f"t3_{post.id}")
+                break
+            except Exception as exc:
+                # 403/429 from datacenter IPs, transient network, etc.
+                logger.warning("search '%s' attempt %d failed: %s", q, attempt + 1, exc)
+                hit_error = True
+                time.sleep(2 * (attempt + 1))  # exponential-ish backoff
+        per_query_post_rank[q] = order
+
+    # Rank posts by score, keep the strongest, then fetch their top comments.
+    ranked_posts = sorted(
+        submissions_by_id.values(), key=lambda p: getattr(p, "score", 0), reverse=True
+    )[:top_posts]
+
+    post_to_comment_ids: Dict[str, List[str]] = {}
+    comments: List[Dict[str, Any]] = []
+    for post in ranked_posts:
+        post_comments = _collect_comments_from_submission(post, comments_per_post)
+        post_to_comment_ids[f"t3_{post.id}"] = [c["comment_id"] for c in post_comments]
+        comments.extend(post_comments)
+
+    # Rewrite per-query provenance from post ids to the comment ids we kept, so
+    # ranking's RRF rewards comments from posts surfaced by multiple queries.
+    per_query_rank: Dict[str, List[str]] = {}
+    for q, post_ids in per_query_post_rank.items():
+        cids: List[str] = []
+        for pid in post_ids:
+            cids.extend(post_to_comment_ids.get(pid, []))
+        per_query_rank[q] = cids
+
+    if comments:
+        return RetrievalResult("ok", comments, per_query_rank)
+    if hit_error:
+        return RetrievalResult("error")  # unreachable / rate-limited — NOT "no coverage"
+    return RetrievalResult("empty")  # genuine zero coverage
+
+
+# ------------------------------------------------------------ local-dev anon fallback
+
+def fetch_json_from_url(url: str) -> Any:
+    """Fetch a Reddit thread's JSON (local dev only; 403s from servers)."""
+    clean = url.split("?")[0]
+    if not clean.endswith(".json"):
+        clean = clean.rstrip("/") + ".json"
+    req = urllib.request.Request(clean, headers={"User-Agent": BROWSER_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=6) as response:
+            if response.status == 200:
+                return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        logger.warning("Anon JSON fetch failed for %s: %s", clean, exc)
+    return None
+
+
+def extract_comments_from_json(reddit_json: Any) -> List[Dict[str, Any]]:
+    """Parse comments from a Reddit thread .json payload into normalized dicts."""
+    out: List[Dict[str, Any]] = []
+    if not reddit_json or len(reddit_json) < 2:
+        return out
+    try:
+        post = reddit_json[0]["data"]["children"][0]["data"]
+        title = post.get("title", "")
+        post_url = f"https://www.reddit.com{post.get('permalink', '')}"
+        subreddit = post.get("subreddit", "")
+    except Exception:
+        title, post_url, subreddit = "", "", ""
+    try:
+        for child in reddit_json[1]["data"]["children"]:
+            if child.get("kind") != "t1":
+                continue
+            d = child.get("data", {})
+            norm = _normalize_comment(
+                comment_id=f"t1_{d.get('id', '')}",
+                post_title=title,
+                post_url=post_url,
+                comment_permalink=f"https://www.reddit.com{d.get('permalink', '')}",
+                subreddit=subreddit or d.get("subreddit", ""),
+                author=d.get("author"),
+                ups=d.get("ups", 0),
+                body=d.get("body", ""),
+                created_utc=d.get("created_utc", 0.0),
+            )
+            if norm:
+                out.append(norm)
+    except Exception as exc:
+        logger.warning("Error parsing anon comments: %s", exc)
+    return out
+
+
+def _anon_json_fallback(plan) -> RetrievalResult:
+    """Best-effort, local-dev-only: discover threads then read their real .json.
+
+    DuckDuckGo is used only to DISCOVER thread URLs; grounding is always on the
+    fetched comment JSON, never on search snippets. Gated behind ALLOW_ANON_REDDIT.
+    """
+    try:
+        from duckduckgo_search import DDGS
+    except Exception:
+        return RetrievalResult("no_credentials")
+
+    comments: List[Dict[str, Any]] = []
+    per_query_rank: Dict[str, List[str]] = {}
+    queries = plan.search_queries or [plan.standalone_question]
+    for q in queries[:3]:
+        order: List[str] = []
+        try:
+            with DDGS() as ddgs:
+                for r in ddgs.text(f"site:reddit.com {q}", max_results=4):
+                    url = r.get("href", "")
+                    if "/comments/" not in url:
+                        continue
+                    for c in extract_comments_from_json(fetch_json_from_url(url)):
+                        comments.append(c)
+                        order.append(c["comment_id"])
+        except Exception as exc:
+            logger.warning("Anon fallback query '%s' failed: %s", q, exc)
+        per_query_rank[q] = order
+
+    if comments:
+        return RetrievalResult("ok", comments, per_query_rank)
+    return RetrievalResult("empty")

@@ -1,2028 +1,427 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 
-// API Base configuration
 const API_BASE = import.meta.env.VITE_API_URL
   || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
     : '');
 
-const LLM_PROVIDERS: Record<string, { label: string; keyLabel: string; models: string[]; placeholder: string }> = {
-  groq: {
-    label: 'Groq',
-    keyLabel: 'GROQ_API_KEY',
-    models: ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'mixtral-8x7b-32768', 'llama-3.1-70b-versatile'],
-    placeholder: 'gsk_...',
-  },
-  gemini: {
-    label: 'Google Gemini',
-    keyLabel: 'GEMINI_API_KEY',
-    models: ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
-    placeholder: 'AIza...',
-  },
-  openai: {
-    label: 'OpenAI',
-    keyLabel: 'OPENAI_API_KEY',
-    models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-    placeholder: 'sk-...',
-  },
-  anthropic: {
-    label: 'Anthropic (Claude)',
-    keyLabel: 'ANTHROPIC_API_KEY',
-    models: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6', 'claude-opus-4-8'],
-    placeholder: 'sk-ant-...',
-  },
-  custom: {
-    label: 'Custom / Other',
-    keyLabel: 'API_KEY',
-    models: [],
-    placeholder: 'Your API key...',
-  },
+const LLM_PROVIDERS: Record<string, { label: string; keyLabel: string; models: string[]; placeholder: string; link: string }> = {
+  groq: { label: 'Groq', keyLabel: 'GROQ_API_KEY', models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'], placeholder: 'gsk_…', link: 'https://console.groq.com/keys' },
+  gemini: { label: 'Google Gemini', keyLabel: 'GEMINI_API_KEY', models: ['gemini-2.0-flash', 'gemini-1.5-pro'], placeholder: 'AIza…', link: 'https://aistudio.google.com/app/apikey' },
+  openai: { label: 'OpenAI', keyLabel: 'OPENAI_API_KEY', models: ['gpt-4o-mini', 'gpt-4o'], placeholder: 'sk-…', link: 'https://platform.openai.com/api-keys' },
+  anthropic: { label: 'Anthropic', keyLabel: 'ANTHROPIC_API_KEY', models: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6'], placeholder: 'sk-ant-…', link: 'https://console.anthropic.com/settings/keys' },
 };
 
-interface SavedReportSummary {
-  id: string;
-  query: string;
-  timestamp: string;
-  confidence_score: number;
-  consensus_summary: string;
-}
-
-interface ProgressStep {
-  step: string;
-  status?: 'running' | 'done';
-  message: string;
-  details: string;
-}
-
-interface SourceThread {
-  title: string;
-  url: string;
-  subreddit: string;
-}
-
-interface FeaturedComment {
-  author: string;
-  body: string;
-  ups: number;
-  subreddit: string;
-  url: string;
-  quality_score: number;
-  quality_reason?: string;
-}
-
-interface Perspective {
-  name: string;
-  consensus: string;
-  supporting_points: string[];
-}
-
-interface FactCheck {
-  claim: string;
-  status: 'Verified' | 'Debunked' | 'Disputed' | 'Unverified';
-  explanation: string;
-  source_link: string;
-}
-
-interface GraphNode {
-  id: string;
-  label: string;
-  type: string;
-  x?: number;
-  y?: number;
-  vx?: number;
-  vy?: number;
-}
-
-interface GraphEdge {
-  source: string;
-  target: string;
-  label: string;
-}
-
-interface IntelligenceReport {
-  id: string;
-  query: string;
-  timestamp: string;
-  llm_mode?: 'live' | 'simulated';
-  provider?: string | null;
-  synthesis: {
-    consensus_summary: string;
-    confidence_score: number;
-    detailed_synthesis: string;
-  };
-  sources: SourceThread[];
-  featured_comments: FeaturedComment[];
-  perspectives: Perspective[];
-  contradictions: string[];
-  facts_checked: FactCheck[];
-  knowledge_graph: {
-    nodes: GraphNode[];
-    edges: GraphEdge[];
-  };
-}
-
-// Preset Recommendations
-const SEARCH_PRESETS = [
-  "Best laptop for local LLMs and Ollama?",
-  "Is a computer science degree worth it in 2026?",
-  "Should I buy a Tesla Model Y? Owner reviews",
-  "React vs Vue in 2026 tech stack choices"
+const EXAMPLES = [
+  'Is the RTX 4080 worth it for 1440p gaming?',
+  'Best budget mechanical keyboard?',
+  'Is a CS degree still worth it in 2026?',
+  'Why does my sourdough come out dense?',
 ];
 
-// Interactive Physics Force-Directed Knowledge Graph Component
-function ForceGraph({ graphData, floating }: { graphData: { nodes: GraphNode[]; edges: GraphEdge[] }; floating?: boolean }) {
-  const [nodes, setNodes] = useState<GraphNode[]>([]);
-  const [edges, setEdges] = useState<GraphEdge[]>([]);
-  const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(650);
-  const height = 400;
+const STAGES = [
+  { key: 'understand', label: 'Understanding your question' },
+  { key: 'retrieve', label: 'Searching Reddit' },
+  { key: 'answer', label: 'Reading threads & answering' },
+];
 
-  // Responsive width
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const w = entry.contentRect.width;
-        if (w > 0) setWidth(Math.min(w, 650));
-      }
-    });
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, []);
+interface Citation { index: number; thread_title: string; permalink: string; subreddit: string; author: string; snippet: string; ups: number; created_utc: number }
+interface AnswerResponse {
+  id: string; conversation_id: string; query: string; standalone_question: string; timestamp: string;
+  llm_mode: 'live' | 'simulated'; provider: string | null; intent: string; grounded: boolean;
+  tldr: string; answer_markdown: string; refusal_reason: string; citations: Citation[];
+  sources: { title: string; url: string; subreddit: string }[]; suggested_followups: string[]; retrieval_status: string;
+}
+interface ChatMessage { role: 'user' | 'assistant'; content: string; answer?: AnswerResponse }
+interface ProgressStep { step: string; status?: string; message: string; details: string }
+interface HistoryItem { id: string; query: string; timestamp: string; tldr: string; grounded: boolean; llm_mode: string }
 
-  // Initialize positions randomly near the center
-  useEffect(() => {
-    if (!graphData || !graphData.nodes || graphData.nodes.length === 0) return;
-    
-    const initialNodes = graphData.nodes.map((node) => ({
-      ...node,
-      x: width / 2 + (Math.random() - 0.5) * 120,
-      y: height / 2 + (Math.random() - 0.5) * 120,
-      vx: 0,
-      vy: 0,
-    }));
-    
-    setNodes(initialNodes);
-    setEdges(graphData.edges || []);
-  }, [graphData]);
-
-  // Physics Simulation loop
-  useEffect(() => {
-    if (nodes.length === 0) return;
-    let animationFrameId: number;
-
-    const tick = () => {
-      setNodes((currentNodes) => {
-        // Create editable copies
-        const updatedNodes = currentNodes.map((node) => ({ ...node }));
-        const nodeMap = new Map(updatedNodes.map((n) => [n.id, n]));
-
-        const kRepulsion = 800;
-        const kAttraction = 0.04;
-        const d0 = 100;
-        const gravity = 0.02;
-        const friction = floating ? 0.92 : 0.85;
-
-        // 1. Calculate repulsion forces (all pairs push apart)
-        for (let i = 0; i < updatedNodes.length; i++) {
-          for (let j = i + 1; j < updatedNodes.length; j++) {
-            const n1 = updatedNodes[i];
-            const n2 = updatedNodes[j];
-            
-            const dx = n2.x! - n1.x!;
-            const dy = n2.y! - n1.y!;
-            const distSq = dx * dx + dy * dy + 0.1;
-            const dist = Math.sqrt(distSq);
-
-            if (dist < 320) {
-              const force = kRepulsion / distSq;
-              const fx = (dx / dist) * force;
-              const fy = (dy / dist) * force;
-
-              if (n1.id !== draggedNodeId) {
-                n1.vx! -= fx;
-                n1.vy! -= fy;
-              }
-              if (n2.id !== draggedNodeId) {
-                n2.vx! += fx;
-                n2.vy! += fy;
-              }
-            }
-          }
-        }
-
-        // 2. Calculate attraction forces (connected links pull together)
-        edges.forEach((edge) => {
-          const sourceNode = nodeMap.get(edge.source);
-          const targetNode = nodeMap.get(edge.target);
-
-          if (sourceNode && targetNode) {
-            const dx = targetNode.x! - sourceNode.x!;
-            const dy = targetNode.y! - sourceNode.y!;
-            const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
-            const force = kAttraction * (dist - d0);
-            const fx = (dx / dist) * force;
-            const fy = (dy / dist) * force;
-
-            if (sourceNode.id !== draggedNodeId) {
-              sourceNode.vx! += fx;
-              sourceNode.vy! += fy;
-            }
-            if (targetNode.id !== draggedNodeId) {
-              targetNode.vx! -= fx;
-              targetNode.vy! -= fy;
-            }
-          }
-        });
-
-        // 3. Center gravity, boundaries and update positions
-        const cx = width / 2;
-        const cy = height / 2;
-        
-        updatedNodes.forEach((node) => {
-          if (node.id === draggedNodeId) return;
-
-          // Pull to center (gravity)
-          node.vx! += (cx - node.x!) * gravity;
-          node.vy! += (cy - node.y!) * gravity;
-
-          // Apply velocity and drag friction
-          node.x! += node.vx!;
-          node.y! += node.vy!;
-          node.vx! *= friction;
-          node.vy! *= friction;
-
-          // Enforce boundaries
-          const boundaryMargin = 30;
-          if (node.x! < boundaryMargin) { node.x! = boundaryMargin; node.vx! = 0; }
-          if (node.x! > width - boundaryMargin) { node.x! = width - boundaryMargin; node.vx! = 0; }
-          if (node.y! < boundaryMargin) { node.y! = boundaryMargin; node.vy! = 0; }
-          if (node.y! > height - boundaryMargin) { node.y! = height - boundaryMargin; node.vy! = 0; }
-        });
-
-        // 4. Gentle perpetual drift for floating mode
-        if (floating) {
-          updatedNodes.forEach((node) => {
-            if (node.id === draggedNodeId) return;
-            node.vx! += (Math.random() - 0.5) * 0.12;
-            node.vy! += (Math.random() - 0.5) * 0.12;
-          });
-        }
-
-        return updatedNodes;
-      });
-
-      animationFrameId = requestAnimationFrame(tick);
-    };
-
-    animationFrameId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [nodes.length, edges, draggedNodeId, floating]);
-
-  // Drag Handlers
-  const onNodeDragStart = (id: string) => {
-    setDraggedNodeId(id);
-  };
-
-  const onSvgMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (!draggedNodeId || !containerRef.current) return;
-    
-    const rect = containerRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    setNodes((prevNodes) =>
-      prevNodes.map((node) =>
-        node.id === draggedNodeId
-          ? { ...node, x, y, vx: 0, vy: 0 }
-          : node
-      )
-    );
-  };
-
-  const onNodeDragEnd = () => {
-    setDraggedNodeId(null);
-  };
-
-  const getNodeColor = (type: string) => {
-    switch (type.toLowerCase()) {
-      case 'hardware': return '#f97316';     // Glowing orange
-      case 'software': return '#10b981';     // Glowing green
-      case 'concept': return '#0ea5e9';      // Sky blue
-      case 'organization': return '#ec4899'; // Glowing pink
-      default: return '#8b5cf6';             // Violet
+// ---- inline markdown with clickable [n] citation chips ----
+function renderInline(text: string, onCite: (n: number) => void): React.ReactNode[] {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[\d+\])/g).filter(Boolean);
+  return parts.map((p, i) => {
+    const cite = p.match(/^\[(\d+)\]$/);
+    if (cite) {
+      const n = parseInt(cite[1], 10);
+      return <button key={i} className="cite" onClick={() => onCite(n)} title={`Reddit source ${n}`}>{n}</button>;
     }
-  };
+    if (p.startsWith('**') && p.endsWith('**')) return <strong key={i}>{p.slice(2, -2)}</strong>;
+    if (p.startsWith('`') && p.endsWith('`')) return <code key={i}>{p.slice(1, -1)}</code>;
+    return <React.Fragment key={i}>{p}</React.Fragment>;
+  });
+}
+
+function Markdown({ text, onCite }: { text: string; onCite: (n: number) => void }) {
+  const lines = (text || '').split('\n');
+  const out: React.ReactNode[] = [];
+  let list: React.ReactNode[] = [];
+  const flush = () => { if (list.length) { out.push(<ul key={`ul-${out.length}`}>{list}</ul>); list = []; } };
+  lines.forEach((line, i) => {
+    if (/^#{2,3}\s/.test(line)) { flush(); out.push(<h3 key={i}>{renderInline(line.replace(/^#{2,3}\s/, ''), onCite)}</h3>); }
+    else if (/^\s*[-*]\s/.test(line)) { list.push(<li key={i}>{renderInline(line.replace(/^\s*[-*]\s/, ''), onCite)}</li>); }
+    else if (line.trim() === '') { flush(); }
+    else { flush(); out.push(<p key={i}>{renderInline(line, onCite)}</p>); }
+  });
+  flush();
+  return <div className="answer-body">{out}</div>;
+}
+
+function timeAgo(iso: string): string {
+  try {
+    const d = new Date(iso).getTime();
+    const s = Math.floor((Date.now() - d) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  } catch { return ''; }
+}
+
+function AnswerCard({ answer, onFollowup }: { answer: AnswerResponse; onFollowup: (q: string) => void }) {
+  const [hl, setHl] = useState<number | null>(null);
+  const onCite = useCallback((n: number) => {
+    const el = document.getElementById(`src-${answer.id}-${n}`);
+    if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); setHl(n); setTimeout(() => setHl(null), 1600); }
+  }, [answer.id]);
 
   return (
-    <div className="graph-viewport" ref={containerRef}>
-      <svg
-        className="graph-svg"
-        viewBox={`0 0 ${width} ${height}`}
-        onMouseMove={onSvgMouseMove}
-        onMouseUp={onNodeDragEnd}
-        onMouseLeave={onNodeDragEnd}
-      >
-        <defs>
-          <marker
-            id="arrowhead"
-            viewBox="0 0 10 10"
-            refX="18"
-            refY="5"
-            markerWidth="5"
-            markerHeight="5"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(255, 255, 255, 0.18)" />
-          </marker>
-        </defs>
+    <div className={`answer-card${answer.grounded ? '' : ' refusal'}`}>
+      {answer.tldr && <p className="tldr">{renderInline(answer.tldr, onCite)}</p>}
+      {answer.answer_markdown && answer.answer_markdown !== answer.tldr && (
+        <Markdown text={answer.answer_markdown} onCite={onCite} />
+      )}
 
-        {/* Render connections */}
-        {edges.map((edge, i) => {
-          const sNode = nodes.find((n) => n.id === edge.source);
-          const tNode = nodes.find((n) => n.id === edge.target);
+      {answer.grounded && answer.sources.length > 0 && (
+        <details className="sources" open>
+          <summary>▸ {answer.citations.length || answer.sources.length} Reddit source{(answer.citations.length || answer.sources.length) > 1 ? 's' : ''}</summary>
+          {answer.citations.map((c) => (
+            <a key={c.index} id={`src-${answer.id}-${c.index}`} className={`source${hl === c.index ? ' hl' : ''}`}
+               href={c.permalink} target="_blank" rel="noopener noreferrer">
+              <div className="s-head">
+                <span className="s-idx">{c.index}</span>
+                <span className="s-sub">r/{c.subreddit}</span>
+                <span>u/{c.author}</span>
+                <span>· {c.ups} upvotes</span>
+              </div>
+              <div className="s-snip">{c.snippet}</div>
+            </a>
+          ))}
+        </details>
+      )}
 
-          if (!sNode || !tNode) return null;
-
-          const midX = (sNode.x! + tNode.x!) / 2;
-          const midY = (sNode.y! + tNode.y!) / 2;
-
-          return (
-            <g key={`edge-${i}`}>
-              <line
-                className="graph-edge"
-                x1={sNode.x}
-                y1={sNode.y}
-                x2={tNode.x}
-                y2={tNode.y}
-                markerEnd="url(#arrowhead)"
-              />
-              <text
-                className="graph-edge-text"
-                x={midX}
-                y={midY - 4}
-              >
-                {edge.label}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* Render nodes */}
-        {nodes.map((node) => (
-          <g
-            key={`node-${node.id}`}
-            className="graph-node"
-            transform={`translate(${node.x!}, ${node.y!})`}
-            onMouseDown={() => onNodeDragStart(node.id)}
-          >
-            <circle
-              className="graph-node-circle"
-              r="10"
-              fill={getNodeColor(node.type)}
-              stroke="rgba(255, 255, 255, 0.2)"
-              style={{ color: getNodeColor(node.type) }}
-            />
-            <text
-              className="graph-node-text"
-              dx="15"
-              dy="4"
-            >
-              {node.label}
-            </text>
-          </g>
-        ))}
-      </svg>
-
-      <div className="graph-legend">
-        <div className="legend-item">
-          <div className="legend-color" style={{ backgroundColor: '#f97316' }}></div>
-          <span>Hardware</span>
+      {answer.suggested_followups.length > 0 && (
+        <div className="followups">
+          {answer.suggested_followups.map((f, i) => (
+            <button key={i} className="followup" onClick={() => onFollowup(f)}>{f}</button>
+          ))}
         </div>
-        <div className="legend-item">
-          <div className="legend-color" style={{ backgroundColor: '#10b981' }}></div>
-          <span>Software</span>
+      )}
+    </div>
+  );
+}
+
+function SettingsModal({ onClose }: { onClose: () => void }) {
+  const [provider, setProvider] = usePersist('provider', 'groq');
+  const [apiKey, setApiKey] = usePersist('apiKey', '');
+  const [model, setModel] = usePersist('model', '');
+  const [redditId, setRedditId] = usePersist('redditClientId', '');
+  const [redditSecret, setRedditSecret] = usePersist('redditClientSecret', '');
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const p = LLM_PROVIDERS[provider] || LLM_PROVIDERS.groq;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label="Settings" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div><h3>Settings</h3><p>Connect your own keys — nothing is stored on the server.</p></div>
+          <button className="icon-btn" onClick={onClose} aria-label="Close settings">✕</button>
         </div>
-        <div className="legend-item">
-          <div className="legend-color" style={{ backgroundColor: '#0ea5e9' }}></div>
-          <span>Concept</span>
-        </div>
-        <div className="legend-item">
-          <div className="legend-color" style={{ backgroundColor: '#ec4899' }}></div>
-          <span>Organization</span>
+        <div className="modal-body">
+          <div className="field-label">AI model — powers understanding & answering</div>
+          <div className="chips">
+            {Object.entries(LLM_PROVIDERS).map(([k, v]) => (
+              <button key={k} className={`chip${provider === k ? ' active' : ''}`} onClick={() => { setProvider(k); setModel(''); }}>{v.label}</button>
+            ))}
+          </div>
+          <select className="select" value={model} onChange={(e) => setModel(e.target.value)}>
+            <option value="">Default ({p.models[0]})</option>
+            {p.models.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <label className="field-label" htmlFor="k">{p.keyLabel}</label>
+          <input id="k" className="input" type="password" autoComplete="off" placeholder={p.placeholder}
+                 value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+
+          <hr className="divider" />
+          <div className="field-label">Reddit API — required for real, live answers</div>
+          <p className="field-hint">
+            Create a free “script” app at <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noopener noreferrer">reddit.com/prefs/apps</a> (redirect URI <code>http://localhost:8080</code>), then paste its client ID &amp; secret. Without these, answers stay in demo mode.
+          </p>
+          <input className="input" type="text" autoComplete="off" placeholder="Reddit client ID"
+                 value={redditId} onChange={(e) => setRedditId(e.target.value)} />
+          <input className="input" type="password" autoComplete="off" placeholder="Reddit client secret"
+                 value={redditSecret} onChange={(e) => setRedditSecret(e.target.value)} />
+
+          {apiKey && redditId && redditSecret ? (
+            <div className="status-line ok"><span>✓</span><span>Fully live — real Reddit answers powered by <strong>{p.label}</strong>.</span></div>
+          ) : (
+            <div className="status-line warn"><span>⚠</span><span>{!apiKey ? 'Add an AI key' : 'Add Reddit credentials'} to leave demo mode. Demo mode returns clearly-labelled sample answers for a few topics.</span></div>
+          )}
+          <div className="links">
+            <a href={p.link} target="_blank" rel="noopener noreferrer">Get {p.label} key ↗</a>
+            <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noopener noreferrer">Reddit app ↗</a>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-// Main App Component
+// localStorage-backed state
+function usePersist(key: string, initial: string): [string, (v: string) => void] {
+  const [v, setV] = useState<string>(() => localStorage.getItem(key) ?? initial);
+  const set = useCallback((nv: string) => { setV(nv); localStorage.setItem(key, nv); }, [key]);
+  return [v, set];
+}
+
 export default function App() {
-  const [query, setQuery] = useState('');
-  const [reports, setReports] = useState<SavedReportSummary[]>([]);
-  const [activeReport, setActiveReport] = useState<IntelligenceReport | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
   const [running, setRunning] = useState(false);
-  const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
-  const [completedSteps, setCompletedSteps] = useState<string[]>([]);
-  const abortRef = useRef<AbortController | null>(null);
-  const [activeTab, setActiveTab] = useState<'synthesis' | 'perspectives' | 'debates' | 'factchecks' | 'comments'>('synthesis');
+  const [steps, setSteps] = useState<ProgressStep[]>([]);
+  const [done, setDone] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-
-  // Settings state (API key, provider, model)
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('apiKey') || '');
-  const [provider, setProvider] = useState(() => localStorage.getItem('provider') || 'groq');
-  const [model, setSelectedModel] = useState(() => localStorage.getItem('model') || '');
-  // Custom provider/model — used when provider === 'custom'
-  const [customProviderName, setCustomProviderName] = useState(() => localStorage.getItem('customProviderName') || '');
-  const [customModelName, setCustomModelName] = useState(() => localStorage.getItem('customModelName') || '');
-  // Auto-open settings on first visit if no key is stored
-  const [settingsOpen, setSettingsOpen] = useState(() => !localStorage.getItem('apiKey'));
-
-  // Persist settings to localStorage
-  useEffect(() => { localStorage.setItem('apiKey', apiKey); }, [apiKey]);
-  useEffect(() => { localStorage.setItem('provider', provider); }, [provider]);
-  useEffect(() => { localStorage.setItem('model', model); }, [model]);
-  useEffect(() => { localStorage.setItem('customProviderName', customProviderName); }, [customProviderName]);
-  useEffect(() => { localStorage.setItem('customModelName', customModelName); }, [customModelName]);
-
-  // Mobile sidebar state
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [theme, setTheme] = usePersist('theme', 'dark');
+  const [convId, setConvId] = useState<string>(() => crypto.randomUUID());
+  const abortRef = useRef<AbortController | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
 
-  // Collapsible sections
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [sourcesCollapsed, setSourcesCollapsed] = useState(false);
+  useEffect(() => { document.documentElement.setAttribute('data-theme', theme); }, [theme]);
+  useEffect(() => { loadHistory(); return () => abortRef.current?.abort(); }, []);
+  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }, [messages, steps, running]);
 
-  // Win98 nostalgia prompt
-  const [showWin98Prompt, setShowWin98Prompt] = useState(() => {
-    return localStorage.getItem('win98PromptDismissed') !== 'true';
-  });
+  const lastAnswer = [...messages].reverse().find((m) => m.answer)?.answer;
+  const isDemo = lastAnswer ? lastAnswer.llm_mode === 'simulated' : !localStorage.getItem('apiKey');
 
-  // Theme states
-  const [theme, setThemeState] = useState<'dark' | 'light' | 'win98'>(() => {
-    const saved = localStorage.getItem('theme');
-    return (saved === 'dark' || saved === 'light' || saved === 'win98') ? saved : 'dark';
-  });
-
-  const [startMenuOpen, setStartMenuOpen] = useState(false);
-  const [clockTime, setClockTime] = useState('');
-  const [win98Windows, setWin98Windows] = useState({
-    search: true,
-    myComputer: false,
-    recycleBin: false,
-    savedReports: false,
-    about: false,
-  });
-
-  // Abort any in-flight pipeline stream on unmount
-  useEffect(() => () => abortRef.current?.abort(), []);
-
-  // Close the settings modal with Escape
-  useEffect(() => {
-    if (!settingsOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSettingsOpen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [settingsOpen]);
-
-  // Set theme attribute
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-  }, [theme]);
-
-  // Digital clock timer
-  useEffect(() => {
-    const updateClock = () => {
-      const d = new Date();
-      let hours = d.getHours();
-      const minutes = d.getMinutes().toString().padStart(2, '0');
-      const ampm = hours >= 12 ? 'PM' : 'AM';
-      hours = hours % 12;
-      hours = hours ? hours : 12;
-      setClockTime(`${hours}:${minutes} ${ampm}`);
-    };
-    updateClock();
-    const interval = setInterval(updateClock, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const setTheme = (newTheme: 'dark' | 'light' | 'win98') => {
-    setThemeState(newTheme);
-    localStorage.setItem('theme', newTheme);
-  };
-
-  const loadReports = async () => {
+  async function loadHistory() {
     try {
       const res = await fetch(`${API_BASE}/api/reports`);
-      if (res.ok) {
-        const data = await res.json();
-        setReports(data);
-      }
-    } catch (err) {
-      console.error("Failed to load historical reports", err);
-    }
-  };
+      if (res.ok) setHistory(await res.json());
+    } catch { /* offline sidebar is non-fatal */ }
+  }
 
-  // Load queries history on startup (async fetch — state updates land later)
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadReports();
-  }, []);
+  function reset() {
+    abortRef.current?.abort();
+    setMessages([]); setSteps([]); setDone([]); setError(null); setRunning(false);
+    setConvId(crypto.randomUUID()); setSidebarOpen(false);
+  }
 
-  const deleteSingleReport = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (window.confirm("Are you sure you want to delete this saved report?")) {
-      try {
-        const res = await fetch(`${API_BASE}/api/reports/${id}`, { method: 'DELETE' });
-        if (res.ok) {
-          if (activeReport?.id === id) {
-            setActiveReport(null);
-          }
-          loadReports();
-        }
-      } catch (err) {
-        console.error("Failed to delete report", err);
-      }
-    }
-  };
-
-  const clearAllSavedReports = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/reports`, { method: 'DELETE' });
-      if (res.ok) {
-        setActiveReport(null);
-        loadReports();
-        setWin98Windows(prev => ({ ...prev, recycleBin: false }));
-      }
-    } catch (err) {
-      console.error("Failed to clear reports", err);
-    }
-  };
-
-  const handleSearchSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    triggerPipeline(query);
-  };
-
-  const triggerPipeline = (searchText: string) => {
-    if (!searchText.trim()) return;
-
-    // Cancel any pipeline run that is still streaming
+  function send(text: string) {
+    const q = text.trim();
+    if (!q || running) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    setQuery(searchText);
-    setRunning(true);
-    setError(null);
-    setActiveReport(null);
-    setProgressSteps([]);
-    setCompletedSteps([]);
+    const nextMessages: ChatMessage[] = [...messages, { role: 'user', content: q }];
+    setMessages(nextMessages);
+    setInput(''); setError(null); setSteps([]); setDone([]); setRunning(true);
 
-    // In Win98, bring the Report/Stepper window to the front
-    if (theme === 'win98') {
-      setWin98Windows(p => ({ ...p, search: false }));
-    }
+    const payload: Record<string, unknown> = {
+      messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
+      conversation_id: convId,
+    };
+    const apiKey = localStorage.getItem('apiKey');
+    const provider = localStorage.getItem('provider');
+    const model = localStorage.getItem('model');
+    const rid = localStorage.getItem('redditClientId');
+    const rsec = localStorage.getItem('redditClientSecret');
+    if (apiKey) payload.api_key = apiKey;
+    if (provider) payload.provider = provider;
+    if (model) payload.model = model;
+    if (rid && rsec) payload.reddit = { client_id: rid, client_secret: rsec };
+
+    const onComplete = (data: AnswerResponse) => {
+      setMessages((prev) => [...prev, { role: 'assistant', content: data.tldr || data.answer_markdown, answer: data }]);
+      setRunning(false); loadHistory();
+    };
+    const onStep = (d: ProgressStep) => {
+      setSteps((prev) => { const i = prev.findIndex((s) => s.step === d.step); if (i >= 0) { const c = [...prev]; c[i] = d; return c; } return [...prev, d]; });
+      if (d.status === 'done') setDone((prev) => prev.includes(d.step) ? prev : [...prev, d.step]);
+    };
 
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    const resolvedProvider = provider === 'custom' ? (customProviderName || 'openai') : provider;
-    const resolvedModel = provider === 'custom' ? customModelName : model;
-    // API key travels in the POST body — never in the URL, where it would
-    // end up in server logs and browser history.
-    const payload = {
-      q: searchText,
-      api_key: apiKey || null,
-      provider: resolvedProvider || null,
-      model: resolvedModel || null,
-    };
+    if (isLocal) {
+      streamChat(payload, controller.signal, onStep, onComplete, (msg) => { setError(msg); setRunning(false); });
+    } else {
+      fetch(`${API_BASE}/api/chat-sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: controller.signal })
+        .then(async (r) => { if (!r.ok) throw new Error(await r.text() || `HTTP ${r.status}`); return r.json(); })
+        .then(onComplete)
+        .catch((e) => { if (e?.name !== 'AbortError') { setError(e.message || 'Request failed'); setRunning(false); } });
+    }
+  }
 
-    const handleEvent = (data: ProgressStep & { data?: IntelligenceReport }) => {
-      if (data.step === 'completed' && data.data) {
-        setActiveReport(data.data);
-        setRunning(false);
-        loadReports();
-      } else if (data.step === 'failed') {
-        setError(data.details || "Pipeline run failed.");
-        setRunning(false);
-      } else {
-        setProgressSteps((prev) => {
-          const idx = prev.findIndex((s) => s.step === data.step);
-          if (idx !== -1) {
-            const copy = [...prev];
-            copy[idx] = data;
-            return copy;
-          }
-          return [...prev, data];
-        });
-        if (data.status === 'done') {
-          setCompletedSteps((prev) => (prev.includes(data.step) ? prev : [...prev, data.step]));
+  async function streamChat(payload: unknown, signal: AbortSignal, onStep: (d: ProgressStep) => void, onComplete: (d: AnswerResponse) => void, onError: (m: string) => void) {
+    try {
+      const res = await fetch(`${API_BASE}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { done: rdone, value } = await reader.read();
+        if (rdone) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n'); buf = parts.pop() || '';
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith('data: ')) continue;
+          const d = JSON.parse(line.slice(6));
+          if (d.step === 'completed') onComplete(d.data);
+          else if (d.step === 'failed') onError(d.details || 'Pipeline failed');
+          else onStep(d);
         }
       }
-    };
-
-    if (isLocal) {
-      // Local dev: POST + SSE streaming, parsed from the fetch body
-      (async () => {
-        try {
-          const res = await fetch(`${API_BASE}/api/query`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-            signal: controller.signal,
-          });
-          if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const parts = buffer.split('\n\n');
-            buffer = parts.pop() || '';
-            for (const part of parts) {
-              const line = part.trim();
-              if (!line.startsWith('data: ')) continue;
-              try {
-                handleEvent(JSON.parse(line.slice(6)));
-              } catch (err) {
-                console.error('SSE parse error', err);
-              }
-            }
-          }
-        } catch (err) {
-          if ((err as Error)?.name === 'AbortError') return;
-          console.error('Stream error', err);
-          setError('Lost connection to server stream.');
-          setRunning(false);
-        }
-      })();
-    } else {
-      // Production (Netlify/Render): one-shot sync endpoint
-      setProgressSteps([
-        { step: 'query_expansion', status: 'running', message: 'Running analysis...', details: 'Processing your question' }
-      ]);
-      fetch(`${API_BASE}/api/query-sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      })
-        .then(async (res) => {
-          if (!res.ok) {
-            const errText = await res.text();
-            throw new Error(errText || `HTTP ${res.status}`);
-          }
-          return res.json();
-        })
-        .then((data) => {
-          setActiveReport(data);
-          setRunning(false);
-          loadReports();
-        })
-        .catch((err) => {
-          if (err?.name === 'AbortError') return;
-          setError(err.message || "Failed to process query.");
-          setRunning(false);
-        });
+    } catch (e) {
+      if ((e as Error)?.name !== 'AbortError') onError((e as Error).message || 'Connection lost');
     }
-  };
+  }
 
-  const selectReport = async (id: string) => {
-    abortRef.current?.abort();
-    setRunning(false);
-    setError(null);
+  async function openHistory(id: string) {
     setSidebarOpen(false);
     try {
       const res = await fetch(`${API_BASE}/api/reports/${id}`);
-      if (res.ok) {
-        const data = await res.json();
-        setActiveReport(data);
-        setActiveTab('synthesis');
-      } else {
-        setError("Failed to fetch report.");
-      }
-    } catch (err) {
-      console.error("Error loading report", err);
-      setError("Failed to load report from server.");
+      if (!res.ok) return;
+      const data: AnswerResponse = await res.json();
+      abortRef.current?.abort();
+      setRunning(false); setSteps([]); setDone([]); setError(null);
+      setConvId(data.conversation_id || crypto.randomUUID());
+      setMessages([{ role: 'user', content: data.query }, { role: 'assistant', content: data.tldr, answer: data }]);
+    } catch { /* ignore */ }
+  }
+
+  async function deleteHistory(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    try { await fetch(`${API_BASE}/api/reports/${id}`, { method: 'DELETE' }); loadHistory(); } catch { /* ignore */ }
+  }
+
+  function stepStatus(key: string): 'done' | 'active' | 'pending' {
+    if (done.includes(key)) return 'done';
+    if (running && !done.includes(key)) {
+      const firstPending = STAGES.find((s) => !done.includes(s.key));
+      if (firstPending?.key === key) return 'active';
     }
-  };
+    return 'pending';
+  }
 
-  // Convert raw markdown strings to simple React structure
-  const renderMarkdownText = (markdownStr: string) => {
-    if (!markdownStr) return null;
-    const lines = markdownStr.split('\n');
-    return (
-      <div className="detailed-synthesis-markdown">
-        {lines.map((line, idx) => {
-          if (line.startsWith('### ')) {
-            return <h3 key={idx}>{line.slice(4)}</h3>;
-          }
-          if (line.startsWith('## ')) {
-            return <h3 key={idx} style={{ color: 'var(--color-primary)' }}>{line.slice(3)}</h3>;
-          }
-          if (line.startsWith('* ') || line.startsWith('- ')) {
-            return <li key={idx} style={{ marginLeft: '16px', marginBottom: '8px' }}>{line.slice(2)}</li>;
-          }
-          if (line.trim() === '---') {
-            return <hr key={idx} />;
-          }
-          if (line.trim() === '') {
-            return <div key={idx} style={{ height: '8px' }} />;
-          }
-          return <p key={idx}>{line}</p>;
-        })}
-      </div>
-    );
-  };
+  const empty = messages.length === 0 && !running;
 
-  const formatTimestamp = (isoStr: string) => {
-    try {
-      const date = new Date(isoStr);
-      return date.toLocaleDateString(undefined, { 
-        month: 'short', 
-        day: 'numeric', 
-        hour: '2-digit', 
-        minute: '2-digit' 
-      });
-    } catch {
-      return isoStr;
-    }
-  };
+  return (
+    <div className="app">
+      {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
+      <aside className={`sidebar${sidebarOpen ? ' open' : ''}`}>
+        <div className="sidebar-head"><span className="logo-dot">🔎</span><span>Reddit Answers</span></div>
+        <button className="new-chat" onClick={reset}>＋ New chat</button>
+        <div className="history">
+          <div className="history-label">Recent</div>
+          {history.length === 0 ? (
+            <div className="history-empty">Your questions will appear here.</div>
+          ) : history.map((h) => (
+            <div key={h.id} className="history-item" onClick={() => openHistory(h.id)}>
+              <span className="q">{h.query}</span>
+              <span className="meta">{h.grounded ? '' : '⚠ '}{timeAgo(h.timestamp)}{h.llm_mode === 'simulated' ? ' · demo' : ''}</span>
+              <button className="history-del" onClick={(e) => deleteHistory(h.id, e)} aria-label="Delete" title="Delete">✕</button>
+            </div>
+          ))}
+        </div>
+        <div className="sidebar-foot">
+          <button className="icon-btn" onClick={() => setSettingsOpen(true)}>⚙ Settings</button>
+          <button className="icon-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Toggle theme">{theme === 'dark' ? '☀' : '☾'}</button>
+        </div>
+      </aside>
 
-  // Stepper UI Nodes Config — mirrors the LangGraph topology; the three
-  // analysis agents run as a parallel fan-out on the backend.
-  const PIPELINE_NODES = [
-    { key: 'query_expansion', label: 'Query Expansion Agent', desc: 'Agent 1: Generates alternative search vectors' },
-    { key: 'retrieval', label: 'Reddit Retrieval Agent', desc: 'Agent 2: Fetches comments and metadata' },
-    { key: 'spam_filtering', label: 'Spam Detection Agent', desc: 'Agent 3: Filters bots & scores credibility' },
-    { key: 'perspective_extraction', label: 'Perspective Analysis Agent', desc: 'Agent 4: Groups consensus and disagreements (runs in parallel)' },
-    { key: 'knowledge_graph_builder', label: 'Knowledge Graph Agent', desc: 'Agent 5: Maps entities and relationships (runs in parallel)' },
-    { key: 'fact_checking', label: 'Fact-Check Agent', desc: 'Agent 6: Verifies technical claims against search (runs in parallel)' },
-    { key: 'synthesizer', label: 'Knowledge Synthesizer', desc: 'Agent 7: Formulates consensus report' },
-  ];
-
-  const PIPELINE_STAGES: string[][] = [
-    ['query_expansion'],
-    ['retrieval'],
-    ['spam_filtering'],
-    ['perspective_extraction', 'knowledge_graph_builder', 'fact_checking'],
-    ['synthesizer'],
-  ];
-
-  const getStepStatus = (nodeKey: string) => {
-    const stepInfo = progressSteps.find((s) => s.step === nodeKey) || null;
-    if (completedSteps.includes(nodeKey)) return { status: 'completed', info: stepInfo };
-    if (running) {
-      const activeStage = PIPELINE_STAGES.find((stage) => stage.some((k) => !completedSteps.includes(k)));
-      if (activeStage && activeStage.includes(nodeKey)) return { status: 'active', info: stepInfo };
-    }
-    return { status: 'pending', info: null };
-  };
-
-  // ----------------- WINDOWS 98 RETRO DESKTOP LAYOUT -----------------
-  if (theme === 'win98') {
-    return (
-      <div className="win98-desktop" style={{ width: '100vw', height: '100vh', background: '#008080', position: 'relative', overflow: 'hidden', userSelect: 'none', boxSizing: 'border-box' }}>
-        
-        {/* Desktop Shortcuts */}
-        <div className="win98-desktop-area" style={{ position: 'absolute', top: 0, left: 0, display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px', zIndex: 1 }}>
-          <div className="win98-shortcut" onClick={() => setWin98Windows(p => ({ ...p, search: true }))}>
-            <div className="win98-shortcut-icon" style={{ fontSize: '32px' }}>🔍</div>
-            <div className="win98-shortcut-label">Search Engine</div>
-          </div>
-          <div className="win98-shortcut" onClick={() => setWin98Windows(p => ({ ...p, savedReports: true }))}>
-            <div className="win98-shortcut-icon" style={{ fontSize: '32px' }}>📂</div>
-            <div className="win98-shortcut-label">Saved Reports</div>
-          </div>
-          <div className="win98-shortcut" onClick={() => setWin98Windows(p => ({ ...p, myComputer: true }))}>
-            <div className="win98-shortcut-icon" style={{ fontSize: '32px' }}>💻</div>
-            <div className="win98-shortcut-label">My Computer</div>
-          </div>
-          <div className="win98-shortcut" onClick={() => setWin98Windows(p => ({ ...p, recycleBin: true }))}>
-            <div className="win98-shortcut-icon" style={{ fontSize: '32px' }}>🗑️</div>
-            <div className="win98-shortcut-label">Recycle Bin</div>
-          </div>
+      <div className="main">
+        <div className="topbar">
+          <button className="icon-btn hamburger" onClick={() => setSidebarOpen(true)} aria-label="Menu">☰</button>
+          <span className="title">Reddit Answers</span>
+          <span className="spacer" />
+          <span className={`badge ${isDemo ? 'demo' : 'live'}`}>{isDemo ? '○ Demo mode' : '● Live'}</span>
+          <button className="icon-btn" onClick={() => setSettingsOpen(true)}>⚙</button>
         </div>
 
-        {/* 1. Search Window */}
-        {win98Windows.search && (
-          <div className="glass-panel" style={{ position: 'absolute', top: '10%', left: '120px', width: '450px', zIndex: 10 }}>
-            <div className="win98-frame-title">
-              <span>Reddit Intelligence Search</span>
-              <div className="win98-frame-btns">
-                <div className="win98-frame-btn">_</div>
-                <div className="win98-frame-btn">□</div>
-                <div className="win98-frame-btn" onClick={() => setWin98Windows(p => ({ ...p, search: false }))}>X</div>
+        <div className="scroll" ref={scrollRef}>
+          {empty ? (
+            <div className="hero">
+              <h1>Ask anything.<br /><span className="grad">Answered from real Reddit.</span></h1>
+              <p>A search engine that only replies from Reddit discussions — it works out what you actually mean, reads the threads, and answers with citations. If Reddit doesn’t cover it, it says so instead of guessing.</p>
+              <div className="examples">
+                {EXAMPLES.map((ex) => <button key={ex} className="example" onClick={() => send(ex)}>{ex}</button>)}
               </div>
             </div>
-            <div>
-              <p style={{ margin: '0 0 8px 0', fontSize: '11px', color: '#000' }}>
-                Separate useful community knowledge from spam, bots, and hearsay.
-              </p>
-              {/* Win98 inline API key strip */}
-              <div style={{ display: 'flex', gap: '4px', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap' }}>
-                <span style={{ fontSize: '10px', color: '#000', fontFamily: 'Courier New', whiteSpace: 'nowrap' }}>Provider:</span>
-                {['groq','gemini','openai','anthropic'].map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    onClick={() => { setProvider(p); setSelectedModel(''); }}
-                    style={{
-                      background: provider === p ? '#000080' : '#c0c0c0',
-                      color: provider === p ? '#fff' : '#000',
-                      border: '1.5px solid', borderColor: '#fff #808080 #808080 #fff',
-                      fontSize: '9px', padding: '1px 5px', cursor: 'pointer',
-                      fontFamily: 'Courier New',
-                    }}
-                  >
-                    {LLM_PROVIDERS[p]?.label}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => setSettingsOpen(true)}
-                  style={{
-                    background: '#c0c0c0', border: '1.5px solid', borderColor: '#fff #808080 #808080 #fff',
-                    fontSize: '9px', padding: '1px 6px', cursor: 'pointer', fontFamily: 'Courier New', marginLeft: '4px'
-                  }}
-                  title="Full settings"
-                >
-                  ⚙️ Settings
-                </button>
-              </div>
-              <div style={{ display: 'flex', gap: '4px', marginBottom: '8px', alignItems: 'center' }}>
-                <span style={{ fontSize: '10px', color: '#000', fontFamily: 'Courier New', whiteSpace: 'nowrap' }}>
-                  {LLM_PROVIDERS[provider]?.keyLabel || 'API Key'}:
-                </span>
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={LLM_PROVIDERS[provider]?.placeholder || 'Paste key…'}
-                  style={{
-                    flex: 1, border: '2px solid', borderColor: '#808080 #fff #fff #808080',
-                    background: '#fff', color: '#000', fontSize: '10px',
-                    fontFamily: 'Courier New', padding: '2px 4px',
-                  }}
-                />
-                {apiKey
-                  ? <span style={{ fontSize: '9px', color: 'green', fontFamily: 'Courier New' }}>● Live</span>
-                  : <span style={{ fontSize: '9px', color: '#800000', fontFamily: 'Courier New' }}>○ Demo</span>
-                }
-              </div>
-              <form onSubmit={handleSearchSubmit} className="search-form">
-                <div className="search-input-wrapper">
-                  <input
-                    type="text"
-                    className="search-input"
-                    placeholder="Ask a question..."
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                  />
-                  <button type="submit" className="search-btn">Analyze</button>
+          ) : (
+            <div className="thread">
+              {messages.map((m, i) => (
+                <div className="turn" key={i}>
+                  {m.role === 'user'
+                    ? <div className="user-row"><div className="user-bubble">{m.content}</div></div>
+                    : m.answer && <AnswerCard answer={m.answer} onFollowup={send} />}
                 </div>
-              </form>
-              <div className="presets-container" style={{ marginTop: '12px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                {SEARCH_PRESETS.map((preset, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    className="preset-btn"
-                    onClick={() => {
-                      setQuery(preset);
-                      triggerPipeline(preset);
-                    }}
-                  >
-                    {preset}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 2. Saved Investigations Window */}
-        {win98Windows.savedReports && (
-          <div className="glass-panel" style={{ position: 'absolute', top: '15%', left: '180px', width: '380px', zIndex: 11 }}>
-            <div className="win98-frame-title">
-              <span>Saved Investigations</span>
-              <div className="win98-frame-btns">
-                <div className="win98-frame-btn">_</div>
-                <div className="win98-frame-btn">□</div>
-                <div className="win98-frame-btn" onClick={() => setWin98Windows(p => ({ ...p, savedReports: false }))}>X</div>
-              </div>
-            </div>
-            <div style={{ maxHeight: '280px', overflowY: 'auto', background: '#fff', border: '2px solid #808080', padding: '4px' }}>
-              {reports.length === 0 ? (
-                <div style={{ padding: '8px', fontSize: '11px', color: '#666' }}>No recent saved reports found.</div>
-              ) : (
-                reports.map((r) => (
-                  <div
-                    key={r.id}
-                    onClick={() => {
-                      selectReport(r.id);
-                    }}
-                    style={{
-                      padding: '6px',
-                      borderBottom: '1px solid #e0e0e0',
-                      cursor: 'pointer',
-                      fontSize: '11px',
-                      color: '#000',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                    }}
-                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#000080' + '15'}
-                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                  >
-                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '75%' }}>
-                      <div style={{ fontWeight: 'bold' }}>{r.query}</div>
-                      <div style={{ fontSize: '9px', color: '#555' }}>Score: {Math.round(r.confidence_score * 100)}% | {formatTimestamp(r.timestamp)}</div>
-                    </div>
-                    <button
-                      onClick={(e) => deleteSingleReport(r.id, e)}
-                      style={{
-                        background: '#c0c0c0',
-                        border: '1.5px solid',
-                        borderColor: '#fff #808080 #808080 #fff',
-                        padding: '1px 6px',
-                        fontSize: '9px',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* 3. Report Window (stepper or results) */}
-        {(running || activeReport) && (
-          <div className="glass-panel" style={{ position: 'absolute', top: '5%', left: '30%', width: '68%', height: '82%', zIndex: 12, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            <div className="win98-frame-title">
-              <span>{running ? `Running Analysis: ${query}` : `Report: ${activeReport?.query}`}</span>
-              <div className="win98-frame-btns">
-                <div className="win98-frame-btn">_</div>
-                <div className="win98-frame-btn">□</div>
-                <div className="win98-frame-btn" onClick={() => {
-                  abortRef.current?.abort();
-                  setRunning(false);
-                  setActiveReport(null);
-                }}>X</div>
-              </div>
-            </div>
-            
-            <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px' }}>
-              {running ? (
-                /* Stepper progress */
-                <div className="stepper-container" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {PIPELINE_NODES.map((node) => {
-                    const { status, info } = getStepStatus(node.key);
+              ))}
+              {running && (
+                <div className="stepper">
+                  {STAGES.map((s) => {
+                    const st = stepStatus(s.key);
+                    const info = steps.find((x) => x.step === s.key);
                     return (
-                      <div key={node.key} className={`step-item ${status}`} style={{ display: 'flex', gap: '12px', borderBottom: '1px solid #808080', paddingBottom: '6px' }}>
-                        <div className="step-node" style={{ fontWeight: 'bold', minWidth: '24px' }}>
-                          {status === 'completed' && "✓"}
-                          {status === 'active' && "»"}
-                          {status === 'pending' && " "}
-                        </div>
-                        <div className="step-content">
-                          <div className="step-title" style={{ fontWeight: 'bold' }}>{node.label}</div>
-                          <div className="step-desc" style={{ fontSize: '10px' }}>
-                            {status === 'active' || status === 'completed' 
-                              ? (info?.details || info?.message || node.desc) 
-                              : node.desc}
-                          </div>
-                        </div>
+                      <div key={s.key} className={`step ${st}`}>
+                        <span className="dot">{st === 'done' ? <span style={{ color: '#fff', fontSize: 10 }}>✓</span> : null}</span>
+                        <span>{s.label}</span>
+                        {info?.details && st !== 'pending' && <span className="det">{info.details}</span>}
                       </div>
                     );
                   })}
                 </div>
-              ) : (
-                /* Report content */
-                activeReport && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <div style={{ background: '#e0e0e0', border: '1px solid #808080', padding: '8px' }}>
-                      <h4 style={{ margin: '0 0 4px 0', color: '#000080', fontSize: '12px' }}>Community Consensus</h4>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#000' }}>{activeReport.synthesis.consensus_summary}</p>
-                      <div style={{ marginTop: '6px', fontSize: '10px', fontWeight: 'bold', color: '#000080' }}>
-                        Confidence Level: {Math.round(activeReport.synthesis.confidence_score * 100)}%
-                        {activeReport.llm_mode === 'simulated' && (
-                          <span style={{ marginLeft: '8px', color: '#800000' }}>⚠ Demo data — connect an API key for real analysis</span>
-                        )}
-                      </div>
-                    </div>
-
-                    <nav className="tabs-nav" style={{ display: 'flex', gap: '2px', borderBottom: '1px solid #808080', paddingBottom: '2px' }}>
-                      {(['synthesis', 'perspectives', 'debates', 'factchecks', 'comments'] as const).map((tab) => (
-                        <button
-                          key={tab}
-                          className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
-                          onClick={() => setActiveTab(tab)}
-                          style={{ fontSize: '10px', padding: '2px 8px', cursor: 'pointer' }}
-                        >
-                          {tab.toUpperCase()}
-                        </button>
-                      ))}
-                    </nav>
-
-                    <div className="tab-body" style={{ background: '#ffffff', border: '2px solid #808080', padding: '12px', minHeight: '260px', color: '#000' }}>
-                      {activeTab === 'synthesis' && renderMarkdownText(activeReport.synthesis.detailed_synthesis)}
-                      
-                      {activeTab === 'perspectives' && (
-                        <div className="perspectives-container">
-                          {activeReport.perspectives.map((p, idx) => (
-                            <div key={idx} style={{ border: '1px solid #808080', background: '#c0c0c0', padding: '6px', marginBottom: '8px' }}>
-                              <h5 style={{ margin: '0 0 2px 0', color: '#000080', fontSize: '11px' }}>{p.name}</h5>
-                              <p style={{ margin: '0 0 4px 0', fontSize: '10px' }}>{p.consensus}</p>
-                              <ul style={{ margin: 0, paddingLeft: '16px', fontSize: '10px' }}>
-                                {p.supporting_points.map((pt, pIdx) => <li key={pIdx}>{pt}</li>)}
-                              </ul>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {activeTab === 'debates' && (
-                        <div className="contradictions-container">
-                          {activeReport.contradictions.length === 0 ? (
-                            <p style={{ fontSize: '11px' }}>✓ High level of agreement. No major disputes flagged.</p>
-                          ) : (
-                            activeReport.contradictions.map((c, idx) => (
-                              <div key={idx} style={{ border: '1px solid #808080', background: '#c0c0c0', padding: '6px', marginBottom: '6px', fontSize: '11px' }}>
-                                <strong>Disputed Item #{idx + 1}:</strong> {c}
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      )}
-
-                      {activeTab === 'factchecks' && (
-                        <div className="factchecks-container">
-                          {activeReport.facts_checked.map((f, idx) => (
-                            <div key={idx} style={{ border: '1px solid #808080', background: '#c0c0c0', padding: '6px', marginBottom: '6px', fontSize: '11px' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold' }}>
-                                <span>{f.claim}</span>
-                                <span style={{ color: f.status === 'Verified' ? '#008000' : '#800000' }}>{f.status}</span>
-                              </div>
-                              <p style={{ margin: '4px 0 0 0', fontSize: '10px', color: '#333' }}>{f.explanation}</p>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {activeTab === 'comments' && (
-                        <div className="comments-container">
-                          {activeReport.featured_comments.map((comment, idx) => (
-                            <div key={idx} style={{ borderBottom: '1px solid #808080', paddingBottom: '6px', marginBottom: '6px', fontSize: '10px' }}>
-                              <div style={{ color: '#000080', fontWeight: 'bold' }}>r/{comment.subreddit} • u/{comment.author} ({comment.ups} ups)</div>
-                              <p style={{ margin: '2px 0 0 0' }}>{comment.body}</p>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Source threads links */}
-                    <div>
-                      <div style={{ fontWeight: 'bold', fontSize: '11px', marginBottom: '4px' }}>Source References:</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                        {activeReport.sources.map((s, idx) => (
-                          <a
-                            key={idx}
-                            href={s.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="preset-btn"
-                            style={{ fontSize: '10px', textDecoration: 'none', color: '#000' }}
-                          >
-                            r/{s.subreddit}: {s.title.slice(0, 32)}...
-                          </a>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )
               )}
-            </div>
-          </div>
-        )}
-
-        {/* 4. My Computer Window */}
-        {win98Windows.myComputer && (
-          <div className="glass-panel" style={{ position: 'absolute', top: '25%', left: '200px', width: '360px', zIndex: 13 }}>
-            <div className="win98-frame-title">
-              <span>My Computer - System Info</span>
-              <div className="win98-frame-btns">
-                <div className="win98-frame-btn">_</div>
-                <div className="win98-frame-btn">□</div>
-                <div className="win98-frame-btn" onClick={() => setWin98Windows(p => ({ ...p, myComputer: false }))}>X</div>
-              </div>
-            </div>
-            <div style={{ padding: '4px', fontSize: '11px', color: '#000' }}>
-              <div style={{ fontWeight: 'bold', marginBottom: '6px' }}>System Diagnostics:</div>
-              <ul style={{ margin: 0, paddingLeft: '16px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <li>Host Platform: <strong>macOS Sandbox</strong></li>
-                <li>FastAPI Backend: <span style={{ color: 'green', fontWeight: 'bold' }}>Active (Port 8000)</span></li>
-                <li>Vite UI DevServer: <span style={{ color: 'green', fontWeight: 'bold' }}>Active (Port 5173)</span></li>
-                <li>LLM Routing: <strong>Gemini / Groq Dual Support</strong></li>
-                <li>Search Indexer: <strong>DuckDuckGo LiveFactCheck</strong></li>
-                <li>Reddit Scraping: <strong>Requests-based Fallback Scraper</strong></li>
-                <li>Database Directory: <strong>backend/data/</strong></li>
-                <li>Total Saved Reports: <strong>{reports.length} files</strong></li>
-              </ul>
-            </div>
-          </div>
-        )}
-
-        {/* 5. Recycle Bin Confirmation Window */}
-        {win98Windows.recycleBin && (
-          <div className="glass-panel" style={{ position: 'absolute', top: '30%', left: '250px', width: '320px', zIndex: 14 }}>
-            <div className="win98-frame-title">
-              <span>Confirm Empty Recycle Bin</span>
-              <div className="win98-frame-btns">
-                <div className="win98-frame-btn">_</div>
-                <div className="win98-frame-btn">□</div>
-                <div className="win98-frame-btn" onClick={() => setWin98Windows(p => ({ ...p, recycleBin: false }))}>X</div>
-              </div>
-            </div>
-            <div style={{ textAlign: 'center', padding: '8px' }}>
-              <p style={{ margin: '0 0 12px 0', fontSize: '11px', color: '#000' }}>
-                🗑️ Are you sure you want to empty the Recycle Bin? This will delete all saved reports permanently.
-              </p>
-              <div style={{ display: 'flex', justifyContent: 'center', gap: '8px' }}>
-                <button onClick={clearAllSavedReports} className="preset-btn" style={{ minWidth: '60px' }}>Yes</button>
-                <button onClick={() => setWin98Windows(p => ({ ...p, recycleBin: false }))} className="preset-btn" style={{ minWidth: '60px' }}>No</button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 6. About Window */}
-        {win98Windows.about && (
-          <div className="glass-panel" style={{ position: 'absolute', top: '35%', left: '300px', width: '300px', zIndex: 15 }}>
-            <div className="win98-frame-title">
-              <span>About Reddit Intelligence Engine</span>
-              <div className="win98-frame-btns">
-                <div className="win98-frame-btn">_</div>
-                <div className="win98-frame-btn">□</div>
-                <div className="win98-frame-btn" onClick={() => setWin98Windows(p => ({ ...p, about: false }))}>X</div>
-              </div>
-            </div>
-            <div style={{ textAlign: 'center', padding: '6px', fontSize: '11px', color: '#000' }}>
-              <div style={{ fontSize: '24px', marginBottom: '6px' }}>🤖</div>
-              <div style={{ fontWeight: 'bold' }}>Reddit Intelligence Engine</div>
-              <div style={{ color: '#555', marginBottom: '8px' }}>v2.0 (Dual-Engine Merge)</div>
-              <p style={{ margin: '0 0 12px 0', fontSize: '10px' }}>
-                Powered by Gemini & Groq multi-agent Graph orchestrations, live DDG check integration, and hybrid Reddit retrievers.
-              </p>
-              <button onClick={() => setWin98Windows(p => ({ ...p, about: false }))} className="preset-btn" style={{ minWidth: '60px' }}>OK</button>
-            </div>
-          </div>
-        )}
-
-        {/* Error Dialog */}
-        {error && (
-          <div className="glass-panel" style={{ position: 'absolute', top: '40%', left: '320px', width: '320px', zIndex: 20 }}>
-            <div className="win98-frame-title" style={{ background: 'linear-gradient(90deg, #800000, #ff0000)' }}>
-              <span>Connection Error</span>
-              <div className="win98-frame-btns">
-                <div className="win98-frame-btn" onClick={() => setError(null)}>X</div>
-              </div>
-            </div>
-            <div style={{ padding: '8px', fontSize: '11px', color: '#000' }}>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                <span style={{ fontSize: '18px' }}>⚠️</span>
-                <span>{error}</span>
-              </div>
-              <div style={{ marginTop: '12px', textAlign: 'right' }}>
-                <button onClick={() => setError(null)} className="preset-btn" style={{ minWidth: '60px' }}>Close</button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Start Menu Popup */}
-        {startMenuOpen && (
-          <div className="win98-start-menu">
-            <div className="win98-menu-item" onClick={() => { setWin98Windows(p => ({ ...p, search: true })); setStartMenuOpen(false); }}>🔍 Search Engine</div>
-            <div className="win98-menu-item" onClick={() => { setWin98Windows(p => ({ ...p, savedReports: true })); setStartMenuOpen(false); }}>📂 Saved Reports</div>
-            <div className="win98-menu-item" onClick={() => { setWin98Windows(p => ({ ...p, myComputer: true })); setStartMenuOpen(false); }}>💻 My Computer</div>
-            <div className="win98-menu-item" onClick={() => { setWin98Windows(p => ({ ...p, recycleBin: true })); setStartMenuOpen(false); }}>🗑️ Recycle Bin</div>
-            <div className="win98-menu-divider" />
-            <div style={{ padding: '2px 8px', fontSize: '9px', color: '#808080', fontWeight: 'bold' }}>Switch Theme:</div>
-            <div className="win98-menu-item" style={{ paddingLeft: '20px' }} onClick={() => { setTheme('dark'); setStartMenuOpen(false); }}>Dark Mode</div>
-            <div className="win98-menu-item" style={{ paddingLeft: '20px' }} onClick={() => { setTheme('light'); setStartMenuOpen(false); }}>Light Mode</div>
-            <div className="win98-menu-item" style={{ paddingLeft: '20px' }} onClick={() => { setTheme('win98'); setStartMenuOpen(false); }}>Windows 98</div>
-            <div className="win98-menu-divider" />
-            <div className="win98-menu-item" onClick={() => { setWin98Windows(p => ({ ...p, about: true })); setStartMenuOpen(false); }}>ℹ️ About System</div>
-            <div className="win98-menu-item" onClick={() => { setTheme('dark'); setStartMenuOpen(false); }}>🛑 Shut Down</div>
-          </div>
-        )}
-
-        {/* Taskbar */}
-        <div className="win98-taskbar">
-          <button className="win98-start-button" onClick={() => setStartMenuOpen(!startMenuOpen)}>
-            <span style={{ fontSize: '13px' }}>💻</span> Start
-          </button>
-          
-          <div className="win98-taskbar-divider" />
-          
-          <button className={`win98-start-button ${win98Windows.search ? 'active' : ''}`} onClick={() => setWin98Windows(p => ({ ...p, search: !p.search }))} style={{ fontWeight: 'normal', fontSize: '10px' }}>
-            🔍 Search
-          </button>
-          <button className={`win98-start-button ${win98Windows.savedReports ? 'active' : ''}`} onClick={() => setWin98Windows(p => ({ ...p, savedReports: !p.savedReports }))} style={{ fontWeight: 'normal', fontSize: '10px' }}>
-            📂 Reports
-          </button>
-          
-          {(running || activeReport) && (
-            <div className="win98-task-item" style={{ fontSize: '10px', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              📊 {running ? 'Running...' : activeReport?.query}
-            </div>
-          )}
-          
-          <div className="win98-clock">{clockTime}</div>
-        </div>
-
-      </div>
-    );
-  }
-
-  // ----------------- STANDARD MODERN LAYOUT (DARK/LIGHT) -----------------
-  return (
-    <div className="app-container">
-      {/* Background Neon Glows */}
-      <div className="background-glows">
-        <div className="glow-1"></div>
-        <div className="glow-2"></div>
-      </div>
-
-      {/* Mobile sidebar toggle */}
-      <button
-        className="sidebar-toggle"
-        onClick={() => setSidebarOpen(!sidebarOpen)}
-        aria-label={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
-        aria-expanded={sidebarOpen}
-      >
-        {sidebarOpen ? '✕' : '☰'}
-      </button>
-
-      {/* Sidebar backdrop */}
-      <div className={`sidebar-backdrop${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
-
-      {/* Sidebar: Query History */}
-      <aside className={`sidebar${sidebarOpen ? ' open' : ''}${sidebarCollapsed ? ' collapsed' : ''}`}>
-        <div className="sidebar-header">
-          <div className="logo-container">
-            <div className="logo-icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-              </svg>
-            </div>
-            <span className="logo-text">Reddit Intelligence</span>
-          </div>
-          <button
-            className="sidebar-collapse-btn"
-            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              {sidebarCollapsed
-                ? <><polyline points="9 18 15 12 9 6"></polyline></>
-                : <><polyline points="15 18 9 12 15 6"></polyline></>
-              }
-            </svg>
-          </button>
-        </div>
-
-        <div className={`sidebar-collapsible${sidebarCollapsed ? ' collapsed' : ''}`}>
-          <h3 className="sidebar-title">Saved Investigations</h3>
-
-          <div className="reports-list">
-          {reports.length === 0 ? (
-            <div style={{ padding: '0 8px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              No recent searches found. Submit your first query to build a report.
-            </div>
-          ) : (
-            reports.map((report) => (
-              <div
-                key={report.id}
-                className={`report-item ${activeReport?.id === report.id ? 'active' : ''}`}
-                onClick={() => selectReport(report.id)}
-                style={{ position: 'relative', paddingRight: '36px' }}
-              >
-                <span className="report-item-query">{report.query}</span>
-                <div className="report-item-meta">
-                  <span>Score: {Math.round(report.confidence_score * 100)}%</span>
-                  <span>{formatTimestamp(report.timestamp)}</span>
-                </div>
-                <button
-                  onClick={(e) => deleteSingleReport(report.id, e)}
-                  title="Delete Report"
-                  aria-label={`Delete report: ${report.query}`}
-                  style={{
-                    position: 'absolute',
-                    top: '50%',
-                    right: '12px',
-                    transform: 'translateY(-50%)',
-                    background: 'none',
-                    border: 'none',
-                    color: 'var(--text-muted)',
-                    cursor: 'pointer',
-                    padding: '4px',
-                    fontSize: '0.85rem',
-                    transition: 'color 0.2s',
-                    zIndex: 10,
-                  }}
-                  onMouseEnter={(e) => e.currentTarget.style.color = 'var(--color-danger)'}
-                  onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-muted)'}
-                >
-                  ✕
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-
-        <footer className="sidebar-footer" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div>Engine Status: Operational</div>
-          
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', borderTop: '1px solid var(--border-standard)', paddingTop: '10px' }}>
-            <span>Theme:</span>
-            <select
-              value={theme}
-              onChange={(e) => setTheme(e.target.value as 'dark' | 'light' | 'win98')}
-              style={{
-                background: 'var(--bg-panel)',
-                color: 'var(--text-bright)',
-                border: '1px solid var(--border-standard)',
-                borderRadius: '4px',
-                padding: '4px 8px',
-                fontSize: '0.75rem',
-                cursor: 'pointer',
-                outline: 'none',
-              }}
-            >
-              <option value="dark">Dark Mode</option>
-              <option value="light">Light Mode</option>
-              <option value="win98">Windows 98</option>
-            </select>
-          </div>
-        </footer>
-        </div>{/* end sidebar-collapsible */}
-      </aside>
-
-      {/* Main Content Area */}
-      <main className="main-content">
-
-        {/* Win98 Nostalgia Prompt */}
-        {showWin98Prompt && (
-          <div className="win98-prompt">
-            <div className="win98-prompt-content">
-              <span className="win98-prompt-icon">🖥️</span>
-              <span className="win98-prompt-text">Feeling nostalgic? Try <strong>Windows 98 mode</strong> for a retro experience!</span>
-              <button
-                className="win98-prompt-btn"
-                onClick={() => {
-                  setTheme('win98');
-                  setShowWin98Prompt(false);
-                  localStorage.setItem('win98PromptDismissed', 'true');
-                }}
-              >
-                Enable Win98
-              </button>
-              <button
-                className="win98-prompt-dismiss"
-                onClick={() => {
-                  setShowWin98Prompt(false);
-                  localStorage.setItem('win98PromptDismissed', 'true');
-                }}
-                title="Dismiss"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-        )}
-        
-        {/* Settings Modal */}
-        {settingsOpen && (
-          <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
-            <div className="settings-modal glass-panel" role="dialog" aria-modal="true" aria-label="LLM Configuration" onClick={(e) => e.stopPropagation()}>
-              <div className="settings-header">
-                <div>
-                  <h3>LLM Configuration</h3>
-                  <p className="settings-subtitle">Connect your own AI provider for real analysis</p>
-                </div>
-                <button className="settings-close-btn" onClick={() => setSettingsOpen(false)} aria-label="Close settings">✕</button>
-              </div>
-
-              <div className="settings-body">
-                {/* Provider selector */}
-                <label className="settings-label">
-                  Provider
-                  {apiKey && provider && provider !== 'custom' && (
-                    <span className="settings-active-badge">{LLM_PROVIDERS[provider]?.label}</span>
-                  )}
-                </label>
-                <div className="settings-provider-grid">
-                  {Object.entries(LLM_PROVIDERS).map(([key, p]) => (
-                    <button
-                      key={key}
-                      className={`provider-chip ${provider === key ? 'active' : ''}`}
-                      onClick={() => { setProvider(key); setSelectedModel(''); }}
-                      type="button"
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Custom provider name — shown when "Custom / Other" is selected */}
-                {provider === 'custom' && (
-                  <>
-                    <label className="settings-label">Provider Name</label>
-                    <input
-                      className="settings-input"
-                      type="text"
-                      placeholder="e.g. together, mistral, ollama…"
-                      value={customProviderName}
-                      onChange={(e) => setCustomProviderName(e.target.value)}
-                    />
-                    <p className="settings-hint">Must be an OpenAI-compatible API endpoint.</p>
-                  </>
-                )}
-
-                {/* Model selector */}
-                <label className="settings-label">Model</label>
-                {provider !== 'custom' && LLM_PROVIDERS[provider]?.models.length > 0 ? (
-                  <select
-                    className="settings-select"
-                    value={model}
-                    onChange={(e) => setSelectedModel(e.target.value)}
-                  >
-                    <option value="">— Default ({LLM_PROVIDERS[provider]?.models[0]}) —</option>
-                    {LLM_PROVIDERS[provider].models.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className="settings-input"
-                    type="text"
-                    placeholder={provider === 'custom' ? 'e.g. gpt-4o-mini, llama-3-70b…' : 'Model name'}
-                    value={provider === 'custom' ? customModelName : model}
-                    onChange={(e) => provider === 'custom' ? setCustomModelName(e.target.value) : setSelectedModel(e.target.value)}
-                  />
-                )}
-
-                {/* API Key */}
-                <label className="settings-label">
-                  API Key
-                  {provider && provider !== 'custom' && (
-                    <span className="settings-key-env">{LLM_PROVIDERS[provider]?.keyLabel}</span>
-                  )}
-                </label>
-                <div className="settings-key-wrapper">
-                  <input
-                    className="settings-input settings-key-input"
-                    type="password"
-                    placeholder={LLM_PROVIDERS[provider]?.placeholder || 'Your API key…'}
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    autoComplete="off"
-                  />
-                  {apiKey && (
-                    <button
-                      className="settings-key-clear"
-                      type="button"
-                      onClick={() => setApiKey('')}
-                      title="Clear key"
-                    >✕</button>
-                  )}
-                </div>
-
-                {/* Status banner */}
-                {apiKey ? (
-                  <div className="settings-status ok">
-                    <span>✓</span>
-                    <span>
-                      Real AI analysis active —{' '}
-                      <strong>{provider === 'custom' ? (customProviderName || 'custom') : LLM_PROVIDERS[provider]?.label}</strong>
-                      {(provider === 'custom' ? customModelName : model) && (
-                        <> · {provider === 'custom' ? customModelName : model}</>
-                      )}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="settings-status warn">
-                    <span>⚠️</span>
-                    <span>No API key — responses will use pre-generated demo data for a handful of preset topics.</span>
-                  </div>
-                )}
-
-                {/* Quick links */}
-                <div className="settings-links">
-                  <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer">Groq (free)</a>
-                  <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">Gemini (free)</a>
-                  <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">OpenAI</a>
-                  <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">Anthropic</a>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Landing Page: Search Bar */}
-        {!running && !activeReport && (
-          <div style={{ margin: 'auto 0' }}>
-            <header className="search-header">
-              <h1 className="main-title">Reddit Intelligence Engine</h1>
-              <p className="sub-title">
-                Separate useful community knowledge from spam, bots, and hearsay. Run agentic multi-stage filters to build synthesis reports.
-              </p>
-            </header>
-
-            {/* Always-visible API key config strip */}
-            <div className="api-config-strip glass-panel" style={{ maxWidth: '800px', margin: '0 auto 20px' }}>
-              <div className="api-config-row">
-                <div className="api-config-provider-pills">
-                  {Object.entries(LLM_PROVIDERS).filter(([k]) => k !== 'custom').map(([key, p]) => (
-                    <button
-                      key={key}
-                      type="button"
-                      className={`api-pill ${provider === key ? 'active' : ''}`}
-                      onClick={() => { setProvider(key); setSelectedModel(''); }}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    className={`api-pill ${provider === 'custom' ? 'active' : ''}`}
-                    onClick={() => setProvider('custom')}
-                  >
-                    Custom
-                  </button>
-                </div>
-                <button
-                  className="settings-gear-btn"
-                  onClick={() => setSettingsOpen(true)}
-                  title="Full LLM settings"
-                  style={{ flexShrink: 0 }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="3"></circle>
-                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-                  </svg>
-                </button>
-              </div>
-              <div className="api-config-key-row">
-                <div className="api-key-field-wrap">
-                  <span className="api-key-label">
-                    {provider === 'custom'
-                      ? 'API Key'
-                      : (LLM_PROVIDERS[provider]?.keyLabel || 'API Key')}
-                  </span>
-                  <input
-                    className="api-key-inline-input"
-                    type="password"
-                    placeholder={apiKey ? '••••••••••••' : (LLM_PROVIDERS[provider]?.placeholder || 'Paste your API key…')}
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    autoComplete="off"
-                  />
-                  {apiKey && (
-                    <button className="api-key-clear-btn" type="button" onClick={() => setApiKey('')} title="Clear">✕</button>
-                  )}
-                </div>
-                {apiKey ? (
-                  <span className="api-status-badge ok">● Live</span>
-                ) : (
-                  <span className="api-status-badge demo">○ Demo</span>
-                )}
-              </div>
-              {provider === 'custom' && (
-                <div className="api-config-custom-row">
-                  <input
-                    className="api-key-inline-input"
-                    type="text"
-                    placeholder="Provider name (e.g. together, mistral)…"
-                    value={customProviderName}
-                    onChange={(e) => setCustomProviderName(e.target.value)}
-                    style={{ flex: 1 }}
-                  />
-                  <input
-                    className="api-key-inline-input"
-                    type="text"
-                    placeholder="Model name…"
-                    value={customModelName}
-                    onChange={(e) => setCustomModelName(e.target.value)}
-                    style={{ flex: 1 }}
-                  />
+              {error && (
+                <div className="answer-card refusal">
+                  <p className="tldr">Something went wrong</p>
+                  <div className="answer-body"><p>{error}</p></div>
                 </div>
               )}
             </div>
+          )}
+        </div>
 
-            <div className="glass-panel" style={{ maxWidth: '800px', margin: '0 auto' }}>
-              <form onSubmit={handleSearchSubmit} className="search-form">
-                <div className="search-input-wrapper">
-                  <div className="search-icon-left">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="11" cy="11" r="8"></circle>
-                      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                    </svg>
-                  </div>
-                  <input
-                    type="text"
-                    className="search-input"
-                    placeholder="Ask a question (e.g. Best VRAM laptop for Ollama?)"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                  />
-                  <button type="submit" className="search-btn">
-                    <span>Analyze</span>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="9 18 15 12 9 6"></polyline>
-                    </svg>
-                  </button>
-                </div>
-              </form>
-
-              <div className="presets-container">
-                {SEARCH_PRESETS.map((preset, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    className="preset-btn"
-                    onClick={() => {
-                      setQuery(preset);
-                      triggerPipeline(preset);
-                    }}
-                  >
-                    {preset}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Live Stepper View */}
-        {running && (
-          <div>
-            <div className="glass-panel">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px', borderBottom: '1px solid var(--border-standard)', paddingBottom: '16px' }}>
-                <div>
-                  <h2 style={{ color: 'var(--text-bright)', fontSize: '1.25rem', fontWeight: 700 }}>Executing Intelligence Pipelines</h2>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Query: "{query}"</span>
-                </div>
-                <div className="step-node active" style={{ animation: 'pulse-ring 2.5s infinite' }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 3s linear infinite' }}>
-                    <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
-                  </svg>
-                </div>
-              </div>
-
-              <div className="stepper-container">
-                {PIPELINE_NODES.map((node) => {
-                  const { status, info } = getStepStatus(node.key);
-                  return (
-                    <div key={node.key} className={`step-item ${status}`}>
-                      <div className="step-node">
-                        {status === 'completed' && (
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="20 6 9 17 4 12"></polyline>
-                          </svg>
-                        )}
-                        {status === 'active' && (
-                          <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: 'var(--color-primary)' }} />
-                        )}
-                      </div>
-                      <div className="step-content">
-                        <div className="step-title">{node.label}</div>
-                        <div className="step-desc">
-                          {status === 'active' || status === 'completed' 
-                            ? (info?.details || info?.message || node.desc) 
-                            : node.desc}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Error Notification */}
-        {error && (
-          <div className="glass-panel" style={{ borderColor: 'var(--color-danger)', background: 'rgba(239, 68, 68, 0.05)' }}>
-            <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
-              <div style={{ color: 'var(--color-danger)' }}>
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"></polygon>
-                  <line x1="12" y1="8" x2="12" y2="12"></line>
-                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                </svg>
-              </div>
-              <div>
-                <h3 style={{ color: 'var(--text-bright)', fontSize: '1rem', fontWeight: 700 }}>Connection Error</h3>
-                <p style={{ fontSize: '0.85rem' }}>{error}</p>
-              </div>
-              <button 
-                className="preset-btn" 
-                style={{ marginLeft: 'auto', padding: '6px 12px' }}
-                onClick={() => setError(null)}
-              >
-                Dismiss
+        <div className="composer-wrap">
+          <div className="composer">
+            <div className="composer-box">
+              <textarea
+                ref={taRef}
+                rows={1}
+                placeholder={empty ? 'Ask anything…' : 'Ask a follow-up…'}
+                value={input}
+                onChange={(e) => { setInput(e.target.value); const t = taRef.current; if (t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 160) + 'px'; } }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); } }}
+              />
+              <button className="send" disabled={!input.trim() || running} onClick={() => send(input)} aria-label="Send">
+                {running ? <span style={{ fontSize: 12 }}>■</span> : '↑'}
               </button>
             </div>
-          </div>
-        )}
-
-        {/* Results Page */}
-        {activeReport && !running && (
-          <div>
-            {/* Header / Back Action */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '24px' }}>
-              <button
-                className="preset-btn"
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px' }}
-                onClick={() => {
-                  setActiveReport(null);
-                  setQuery('');
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="19" y1="12" x2="5" y2="12"></line>
-                  <polyline points="12 19 5 12 12 5"></polyline>
-                </svg>
-                <span>New Search</span>
-              </button>
-              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                Investigation completed: {formatTimestamp(activeReport.timestamp)}
-              </span>
-            </div>
-
-            <h2 className="report-query-title">Report: {activeReport.query}</h2>
-
-            <div className="report-grid">
-              
-              {/* Left Column: Report Contents */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                
-                {/* Consensus Summary Widget */}
-                <div className="glass-panel">
-                  <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-bright)', marginBottom: '16px' }}>
-                    Community Consensus
-                  </h3>
-                  <p className="consensus-summary-text">
-                    {activeReport.synthesis.consensus_summary}
-                  </p>
-                  <div className="metrics-row">
-                    <div className="metric-item">
-                      <span className="metric-label">Confidence Score</span>
-                      <div className="metric-val">
-                        <span>{Math.round(activeReport.synthesis.confidence_score * 100)}%</span>
-                        <div className="confidence-meter">
-                          <div
-                            className="confidence-bar"
-                            style={{ width: `${activeReport.synthesis.confidence_score * 100}%` }}
-                          ></div>
-                        </div>
-                      </div>
-                    </div>
-                    {activeReport.llm_mode === 'simulated' && (
-                      <div className="metric-item">
-                        <span
-                          style={{
-                            fontSize: '0.75rem',
-                            fontWeight: 700,
-                            color: '#b45309',
-                            background: 'rgba(245, 158, 11, 0.12)',
-                            border: '1px solid rgba(245, 158, 11, 0.4)',
-                            borderRadius: '6px',
-                            padding: '4px 10px',
-                          }}
-                        >
-                          ⚠ Demo data — connect an API key for real analysis
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Entity Graph Section - Always visible between consensus and details */}
-                {activeReport.knowledge_graph && activeReport.knowledge_graph.nodes && activeReport.knowledge_graph.nodes.length > 0 && (
-                  <div className="glass-panel entity-graph-section">
-                    <div className="entity-graph-header">
-                      <h3 className="entity-graph-title">Entity Relationship Map</h3>
-                      <span className="entity-graph-hint">Nodes float gently — drag to explore</span>
-                    </div>
-                    <ForceGraph graphData={activeReport.knowledge_graph} floating />
-                  </div>
-                )}
-
-                {/* Dashboard Tabs & Contents */}
-                <div className="glass-panel" style={{ padding: '24px' }}>
-                  <nav className="tabs-nav">
-                    <button
-                      className={`tab-btn ${activeTab === 'synthesis' ? 'active' : ''}`}
-                      onClick={() => setActiveTab('synthesis')}
-                    >
-                      Detailed Synthesis
-                    </button>
-                    <button
-                      className={`tab-btn ${activeTab === 'perspectives' ? 'active' : ''}`}
-                      onClick={() => setActiveTab('perspectives')}
-                    >
-                      Perspectives ({activeReport.perspectives.length})
-                    </button>
-                    <button
-                      className={`tab-btn ${activeTab === 'debates' ? 'active' : ''}`}
-                      onClick={() => setActiveTab('debates')}
-                    >
-                      Debates ({activeReport.contradictions.length})
-                    </button>
-                    <button
-                      className={`tab-btn ${activeTab === 'factchecks' ? 'active' : ''}`}
-                      onClick={() => setActiveTab('factchecks')}
-                    >
-                      Fact-Check ({activeReport.facts_checked.length})
-                    </button>
-                    <button
-                      className={`tab-btn ${activeTab === 'comments' ? 'active' : ''}`}
-                      onClick={() => setActiveTab('comments')}
-                    >
-                      Source Comments
-                    </button>
-                  </nav>
-
-                  <div className="tab-body">
-                    {/* Tab 1: Detailed Synthesis */}
-                    {activeTab === 'synthesis' && (
-                      <div>
-                        {renderMarkdownText(activeReport.synthesis.detailed_synthesis)}
-                      </div>
-                    )}
-
-                    {/* Tab 2: Perspectives */}
-                    {activeTab === 'perspectives' && (
-                      <div className="perspectives-container">
-                        {activeReport.perspectives.length === 0 ? (
-                          <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>No perspectives identified.</span>
-                        ) : (
-                          activeReport.perspectives.map((p, idx) => (
-                            <div key={idx} className="perspective-card">
-                              <h4 className="perspective-name">{p.name}</h4>
-                              <p className="perspective-consensus">{p.consensus}</p>
-                              <ul className="points-list">
-                                {p.supporting_points.map((pt, pIdx) => (
-                                  <li key={pIdx}>{pt}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-
-                    {/* Tab 3: Debates & Contradictions */}
-                    {activeTab === 'debates' && (
-                      <div className="contradictions-container">
-                        {activeReport.contradictions.length === 0 ? (
-                          <div style={{ padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid var(--border-standard)' }}>
-                            <span style={{ fontSize: '0.9rem', color: 'var(--text-success)' }}>
-                              ✓ The community has a high level of agreement. No major internal contradictions or debate loops were identified.
-                            </span>
-                          </div>
-                        ) : (
-                          activeReport.contradictions.map((c, idx) => (
-                            <div key={idx} className="contradiction-card">
-                              <h4 className="contradiction-title">Point of Disagreement #{idx + 1}</h4>
-                              <p className="contradiction-body">{c}</p>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-
-                    {/* Tab 4: Fact-Check Log */}
-                    {activeTab === 'factchecks' && (
-                      <div className="factchecks-container">
-                        {activeReport.facts_checked.length === 0 ? (
-                          <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>No claims check logs available for this topic.</span>
-                        ) : (
-                          activeReport.facts_checked.map((f, idx) => (
-                            <div key={idx} className="factcheck-card">
-                              <div className="factcheck-header">
-                                <span className="factcheck-claim">{f.claim}</span>
-                                <span className={`factcheck-badge ${f.status.toLowerCase()}`}>
-                                  {f.status}
-                                </span>
-                              </div>
-                              <p className="factcheck-explanation">{f.explanation}</p>
-                              {f.source_link && (
-                                <a href={f.source_link} target="_blank" rel="noopener noreferrer" className="factcheck-source">
-                                  <span>Source Reference</span>
-                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                                    <polyline points="15 3 21 3 21 9"></polyline>
-                                    <line x1="10" y1="14" x2="21" y2="3"></line>
-                                  </svg>
-                                </a>
-                              )}
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-
-                    {/* Tab 5: Featured Comments */}
-                    {activeTab === 'comments' && (
-                      <div className="comments-container">
-                        {activeReport.featured_comments.map((comment, idx) => (
-                          <div key={idx} className="reddit-comment-card">
-                            <div className="reddit-meta">
-                              <div className="reddit-author-group">
-                                <span className="reddit-subreddit">r/{comment.subreddit}</span>
-                                <span>•</span>
-                                <span className="reddit-author">u/{comment.author}</span>
-                              </div>
-                              <span className="reddit-score-tag">{comment.ups} upvotes</span>
-                            </div>
-                            <p className="reddit-body">{comment.body}</p>
-                            {comment.quality_score !== undefined && (
-                              <div className="reddit-quality-footer">
-                                <span>AI Credibility Score: <span className="quality-score-badge">{Math.round(comment.quality_score * 100)}%</span></span>
-                                {comment.quality_reason && <span style={{ fontStyle: 'italic', fontSize: '0.75rem' }}>"{comment.quality_reason}"</span>}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-              </div>
-
-              {/* Right Column: Source Threads (collapsible) */}
-              <div className="glass-panel sources-card" style={{ height: 'fit-content', position: 'sticky', top: '40px' }}>
-                <div className="sources-header-collapsible" onClick={() => setSourcesCollapsed(!sourcesCollapsed)}>
-                  <h3 className="sources-title" style={{ margin: 0 }}>Verified Source Threads</h3>
-                  <button
-                    className="sources-collapse-btn"
-                    title={sourcesCollapsed ? 'Expand' : 'Collapse'}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      {sourcesCollapsed
-                        ? <><polyline points="6 9 12 15 18 9"></polyline></>
-                        : <><polyline points="18 15 12 9 6 15"></polyline></>
-                      }
-                    </svg>
-                  </button>
-                </div>
-                {!sourcesCollapsed && (
-                  <div className="sources-list" style={{ marginTop: '16px' }}>
-                    {activeReport.sources.length === 0 ? (
-                      <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>No external source threads linked.</span>
-                    ) : (
-                      activeReport.sources.map((s, idx) => (
-                        <a
-                          key={idx}
-                          href={s.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="source-link-item"
-                        >
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            <span style={{ fontWeight: 600, color: 'var(--text-bright)' }}>{s.title}</span>
-                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                              <span className="source-sub-badge">r/{s.subreddit}</span>
-                              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Open post</span>
-                            </div>
-                          </div>
-                        </a>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-
+            <div className="composer-hint">
+              {isDemo ? 'Demo mode — add AI + Reddit keys in Settings for real, live answers.' : 'Answers are grounded only in real Reddit discussion.'}
             </div>
           </div>
-        )}
+        </div>
+      </div>
 
-      </main>
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
-

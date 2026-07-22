@@ -81,15 +81,16 @@ def list_reports() -> List[Dict[str, Any]]:
         data = _load(path)
         if not data:
             continue
-        synthesis = data.get("synthesis", {})
-        summary = synthesis.get("consensus_summary", "")
+        # Prefer the new answer-engine record shape; fall back to legacy fields.
+        summary = data.get("tldr") or data.get("answer_markdown", "")
         reports.append(
             {
                 "id": data.get("id"),
+                "conversation_id": data.get("conversation_id"),
                 "query": data.get("query"),
                 "timestamp": data.get("timestamp"),
-                "confidence_score": synthesis.get("confidence_score", 0.0),
-                "consensus_summary": summary[:180] + ("…" if len(summary) > 180 else ""),
+                "grounded": data.get("grounded", True),
+                "tldr": summary[:180] + ("…" if len(summary) > 180 else ""),
                 "llm_mode": data.get("llm_mode", "simulated"),
             }
         )

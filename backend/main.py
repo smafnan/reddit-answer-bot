@@ -1,12 +1,10 @@
-"""FastAPI application for the Reddit Intelligence Engine.
+"""FastAPI app for the Reddit Answer Engine — ask anything, answered from Reddit.
 
-Security notes:
-- API keys travel in the POST body (never in URL query strings, which end up
-  in access logs and browser history).
-- Query endpoints are rate-limited per client IP (configurable via RATE_LIMIT,
-  e.g. "20/60" = 20 requests per 60 seconds).
-- If the ADMIN_TOKEN env var is set, destructive report endpoints require an
-  ``X-Admin-Token`` header. Unset (local dev), they remain open.
+Security posture (kept from v2):
+- Secrets (LLM key, Reddit client id/secret) travel ONLY in the POST body,
+  never in URL query strings (which land in access logs and browser history).
+- Query endpoints are rate-limited per client IP (RATE_LIMIT, e.g. "20/60").
+- If ADMIN_TOKEN is set, destructive conversation endpoints require X-Admin-Token.
 """
 
 import json
@@ -15,7 +13,7 @@ import os
 import threading
 import time
 from collections import defaultdict, deque
-from typing import Optional
+from typing import List, Literal, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Query, Request
@@ -24,7 +22,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import storage
-from graph import RedditIntelligencePipeline
+from graph import RedditAnswerEngine
 
 load_dotenv()
 
@@ -32,11 +30,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Reddit Intelligence Engine API",
-    description="A multi-agent system that synthesizes community consensus from Reddit discussions.",
+    title="Reddit Answer Engine API",
+    description="Ask anything and get a direct answer grounded only in real Reddit discussion.",
 )
 
-# CORS: wildcard origins are fine for a public, credential-less API.
+# Wildcard origins are fine for a public, credential-less API.
 # (allow_credentials must stay False with a wildcard origin.)
 app.add_middleware(
     CORSMiddleware,
@@ -77,8 +75,6 @@ def enforce_rate_limit(request: Request):
         bucket.append(now)
 
 
-# ------------------------------------------------------------------ auth guard
-
 def require_admin(x_admin_token: Optional[str]):
     expected = os.environ.get("ADMIN_TOKEN")
     if expected and x_admin_token != expected:
@@ -87,121 +83,141 @@ def require_admin(x_admin_token: Optional[str]):
 
 # -------------------------------------------------------------------- schemas
 
-class QueryRequest(BaseModel):
-    q: str = Field(min_length=3, max_length=500, description="The user question to research")
-    api_key: Optional[str] = Field(default=None, max_length=500, description="LLM provider API key (optional; falls back to server env keys, then demo mode)")
-    provider: Optional[str] = Field(default=None, max_length=50, description="LLM provider (groq, gemini, openai, anthropic, or OpenAI-compatible)")
-    model: Optional[str] = Field(default=None, max_length=100, description="Model name override")
+class Message(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class RedditCreds(BaseModel):
+    client_id: str = Field(min_length=1, max_length=100)
+    client_secret: str = Field(min_length=1, max_length=100)
+
+
+class ChatRequest(BaseModel):
+    messages: List[Message] = Field(min_length=1, max_length=20)  # last item = current user turn
+    conversation_id: Optional[str] = Field(default=None, max_length=64)
+    api_key: Optional[str] = Field(default=None, max_length=500)
+    provider: Optional[str] = Field(default=None, max_length=50)
+    model: Optional[str] = Field(default=None, max_length=100)
+    reddit: Optional[RedditCreds] = None  # bring-your-own Reddit creds (POST body only)
 
 
 # ------------------------------------------------------------------ endpoints
 
 @app.get("/")
 def read_root():
-    return {"status": "healthy", "service": "Reddit Intelligence Engine API"}
+    return {"status": "healthy", "service": "Reddit Answer Engine API"}
 
 
-def _sse_stream(pipeline: RedditIntelligencePipeline):
+def _engine_from_request(body: ChatRequest) -> RedditAnswerEngine:
+    return RedditAnswerEngine(
+        [m.model_dump() for m in body.messages],
+        api_key=body.api_key,
+        provider=body.provider,
+        model=body.model,
+        reddit_creds=(body.reddit.model_dump() if body.reddit else None),
+        conversation_id=body.conversation_id,
+    )
+
+
+def _sse_stream(engine: RedditAnswerEngine):
     def event_generator():
         try:
-            for step_update in pipeline.run():
+            for step_update in engine.run():
                 yield f"data: {json.dumps(step_update)}\n\n"
-        except Exception as exc:  # never let a stream die silently
+        except Exception as exc:
             logger.exception("Unhandled error in SSE stream")
             yield f"data: {json.dumps({'step': 'failed', 'message': 'Internal error.', 'details': str(exc)})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-def _run_sync(pipeline: RedditIntelligencePipeline):
-    report_data = None
-    for step_update in pipeline.run():
+def _run_sync(engine: RedditAnswerEngine):
+    answer_data = None
+    for step_update in engine.run():
         if step_update["step"] == "completed":
-            report_data = step_update["data"]
+            answer_data = step_update["data"]
         elif step_update["step"] == "failed":
             raise HTTPException(status_code=500, detail=step_update.get("details", "Pipeline failed"))
-    if report_data is None:
-        raise HTTPException(status_code=500, detail="Pipeline did not produce a report")
-    return report_data
+    if answer_data is None:
+        raise HTTPException(status_code=500, detail="Engine did not produce an answer")
+    return answer_data
 
 
-@app.post("/api/query")
-def stream_query(body: QueryRequest, request: Request):
-    """Streams multi-agent execution progress and the final report via SSE."""
+@app.post("/api/chat")
+def chat_stream(body: ChatRequest, request: Request):
+    """Stream understand -> search -> answer progress, then the grounded answer (SSE)."""
     enforce_rate_limit(request)
-    logger.info("Received streaming query request: %s", body.q)
-    pipeline = RedditIntelligencePipeline(body.q, api_key=body.api_key, provider=body.provider, model=body.model)
-    return _sse_stream(pipeline)
+    logger.info("chat (stream): %s", body.messages[-1].content[:120])
+    return _sse_stream(_engine_from_request(body))
 
 
-@app.post("/api/query-sync")
-def query_sync(body: QueryRequest, request: Request):
-    """Runs the full pipeline and returns the report as a single JSON response."""
+@app.post("/api/chat-sync")
+def chat_sync(body: ChatRequest, request: Request):
+    """Run the full pipeline and return the grounded answer as one JSON response."""
     enforce_rate_limit(request)
-    logger.info("Received sync query request: %s", body.q)
-    pipeline = RedditIntelligencePipeline(body.q, api_key=body.api_key, provider=body.provider, model=body.model)
-    return _run_sync(pipeline)
+    logger.info("chat (sync): %s", body.messages[-1].content[:120])
+    return _run_sync(_engine_from_request(body))
 
 
-@app.get("/api/query")
-def stream_query_get(
+def _engine_from_query(q: str, provider: Optional[str], model: Optional[str]) -> RedditAnswerEngine:
+    # GET variants deliberately accept NO api_key and NO reddit creds — secrets
+    # must never travel in a query string. Uses server env keys or demo mode.
+    return RedditAnswerEngine([{"role": "user", "content": q}], provider=provider, model=model)
+
+
+@app.get("/api/chat")
+def chat_stream_get(
     request: Request,
-    q: str = Query(..., min_length=3, max_length=500, description="The user question to research"),
+    q: str = Query(..., min_length=3, max_length=500),
     provider: Optional[str] = Query(default=None, max_length=50),
     model: Optional[str] = Query(default=None, max_length=100),
 ):
-    """GET variant for curl / simple demos. Deliberately accepts NO api_key —
-    keys must never travel in a query string. Uses server env keys or demo mode."""
+    """GET streaming variant for curl/demos (no secrets accepted)."""
     enforce_rate_limit(request)
-    logger.info("Received GET streaming query request: %s", q)
-    pipeline = RedditIntelligencePipeline(q, provider=provider, model=model)
-    return _sse_stream(pipeline)
+    return _sse_stream(_engine_from_query(q, provider, model))
 
 
-@app.get("/api/query-sync")
-def query_sync_get(
+@app.get("/api/chat-sync")
+def chat_sync_get(
     request: Request,
-    q: str = Query(..., min_length=3, max_length=500, description="The user question to research"),
+    q: str = Query(..., min_length=3, max_length=500),
     provider: Optional[str] = Query(default=None, max_length=50),
     model: Optional[str] = Query(default=None, max_length=100),
 ):
-    """GET variant for curl / simple demos (no api_key accepted — see above)."""
+    """GET one-shot variant for curl/demos (no secrets accepted)."""
     enforce_rate_limit(request)
-    logger.info("Received GET sync query request: %s", q)
-    pipeline = RedditIntelligencePipeline(q, provider=provider, model=model)
-    return _run_sync(pipeline)
+    return _run_sync(_engine_from_query(q, provider, model))
 
+
+# ---- Conversation history (kept path names /api/reports for back-compat) ----
 
 @app.get("/api/reports")
-def list_reports():
-    """Lists summaries of all previously generated and saved reports."""
+def list_conversations():
     return storage.list_reports()
 
 
 @app.get("/api/reports/{report_id}")
-def get_report(report_id: str):
-    """Retrieves a single full saved report by its exact ID."""
+def get_conversation(report_id: str):
     report = storage.get_report(report_id)
     if report is None:
-        raise HTTPException(status_code=404, detail="Report not found")
+        raise HTTPException(status_code=404, detail="Not found")
     return report
 
 
 @app.delete("/api/reports")
-def clear_all_reports(x_admin_token: Optional[str] = Header(default=None)):
-    """Deletes all saved reports (requires X-Admin-Token if ADMIN_TOKEN is set)."""
+def clear_conversations(x_admin_token: Optional[str] = Header(default=None)):
     require_admin(x_admin_token)
     deleted = storage.delete_all_reports()
-    return {"status": "success", "message": f"Deleted {deleted} report(s)"}
+    return {"status": "success", "message": f"Deleted {deleted} item(s)"}
 
 
 @app.delete("/api/reports/{report_id}")
-def delete_report(report_id: str, x_admin_token: Optional[str] = Header(default=None)):
-    """Deletes a single report by its exact ID (requires X-Admin-Token if ADMIN_TOKEN is set)."""
+def delete_conversation(report_id: str, x_admin_token: Optional[str] = Header(default=None)):
     require_admin(x_admin_token)
     if not storage.delete_report(report_id):
-        raise HTTPException(status_code=404, detail="Report not found")
-    return {"status": "success", "message": f"Report {report_id} deleted"}
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"status": "success", "message": f"Deleted {report_id}"}
 
 
 if __name__ == "__main__":

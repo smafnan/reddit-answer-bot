@@ -1,67 +1,64 @@
-"""End-to-end pipeline tests in simulated demo mode (no network, no API keys)."""
+"""End-to-end pipeline tests in offline demo mode (no network, no keys)."""
 
-from agents import fact_checking_agent, spam_and_quality_agent
-from graph import RedditIntelligencePipeline
-from llm import LLMClient
-
-MOCK_COMMENTS = [
-    {"author": "user1", "body": "Bro just buy a Mac lol", "ups": 5, "subreddit": "mac"},
-    {
-        "author": "user2",
-        "body": "I have been using the M3 Max 128GB for running Llama 3. The unified memory makes a massive difference for local model loading.",
-        "ups": 45,
-        "subreddit": "LocalLLaMA",
-    },
-    {"author": "user3", "body": "[deleted]", "ups": 1, "subreddit": "LocalLLaMA"},
-    {"author": "user4", "body": "Short text", "ups": 2, "subreddit": "test"},
-]
+from graph import RedditAnswerEngine
 
 
-def test_spam_filter_heuristics():
-    llm = LLMClient()
-    filtered = spam_and_quality_agent(llm, list(MOCK_COMMENTS))
-    bodies = [c["body"] for c in filtered]
-    assert all("[deleted]" not in b for b in bodies)
-    assert all(len(b) >= 30 for b in bodies)
-    assert filtered[0]["author"] == "user2"  # highest quality first
+def _run(messages):
+    data = None
+    steps = []
+    for ev in RedditAnswerEngine(messages).run():
+        steps.append(ev["step"])
+        if ev["step"] == "completed":
+            data = ev["data"]
+    return steps, data
 
 
-def test_demo_fact_check_never_fabricates_verification():
-    # Regression: demo mode used to mark unmatched claims as "Verified" with a
-    # fabricated explanation. Unmatched claims must be "Unverified" and labelled.
-    llm = LLMClient()
-    facts = fact_checking_agent(llm, "should I get into beekeeping?", MOCK_COMMENTS)
-    assert facts, "demo mode should still return sample facts"
-    for fact in facts:
-        assert "[Demo sample]" in fact["explanation"]
-        if fact["status"] == "Verified":
-            # Only pre-authored topic samples may be 'Verified'; they carry the label too.
-            assert "[Demo sample]" in fact["explanation"]
+def test_pipeline_stages_execute():
+    steps, data = _run([{"role": "user", "content": "Is a CS degree worth it?"}])
+    for expected in ["understand", "retrieve", "answer", "completed"]:
+        assert expected in steps, f"missing stage: {expected}"
+    assert "failed" not in steps
+    assert data is not None
 
 
-def test_full_pipeline_simulated():
-    pipeline = RedditIntelligencePipeline("Is a CS degree worth it?")
-    steps = [event for event in pipeline.run()]
-    step_names = [e["step"] for e in steps]
+def test_covered_topic_is_grounded_with_valid_citations():
+    _, data = _run([{"role": "user", "content": "Best laptop for local LLMs and Ollama?"}])
+    assert data["llm_mode"] == "simulated"
+    assert data["grounded"] is True
+    assert data["answer_markdown"]
+    assert data["citations"], "grounded answer must have citations"
+    # every citation index must exist in the sources/pack (1-based, contiguous)
+    src_count = len(data["sources"])
+    for c in data["citations"]:
+        assert 1 <= c["index"] <= max(src_count, len(data["citations"]))
+        assert c["permalink"].startswith("https://www.reddit.com")
+    assert data["suggested_followups"]
 
-    # All LangGraph nodes must actually execute — including the parallel trio.
-    for expected in [
-        "query_expansion",
-        "retrieval",
-        "spam_filtering",
-        "perspective_extraction",
-        "knowledge_graph_builder",
-        "fact_checking",
-        "synthesizer",
-        "completed",
-    ]:
-        assert expected in step_names, f"missing pipeline step: {expected}"
-    assert "failed" not in step_names
 
-    report = steps[-1]["data"]
-    assert report["llm_mode"] == "simulated"
-    assert report["synthesis"]["consensus_summary"]
-    assert 0.0 <= report["synthesis"]["confidence_score"] <= 1.0
-    assert report["perspectives"]
-    assert report["knowledge_graph"]["nodes"]
-    assert report["featured_comments"]
+def test_greeting_is_not_grounded_and_has_no_sources():
+    _, data = _run([{"role": "user", "content": "hi there"}])
+    assert data["intent"] == "greeting"
+    assert data["grounded"] is False
+    assert data["citations"] == []
+    assert data["sources"] == []
+
+
+def test_followup_resolves_prior_topic():
+    """A context-free follow-up ('what about depreciation?') must inherit the
+    topic from prior turns (the 'understand like Google' guarantee), not fall back
+    to a different topic or refuse in demo mode."""
+    _, data = _run([
+        {"role": "user", "content": "Is a Tesla Model Y worth it?"},
+        {"role": "assistant", "content": "Owners praise charging and software, warn on build quality."},
+        {"role": "user", "content": "what about the depreciation you mentioned?"},
+    ])
+    assert data["grounded"] is True
+    assert data["citations"]
+    assert "tesla" in data["answer_markdown"].lower() or "supercharger" in data["answer_markdown"].lower()
+
+
+def test_unknown_topic_refuses_instead_of_fabricating():
+    _, data = _run([{"role": "user", "content": "How do I ferment homemade kimchi safely?"}])
+    assert data["grounded"] is False
+    assert data["refusal_reason"]
+    assert data["citations"] == []
