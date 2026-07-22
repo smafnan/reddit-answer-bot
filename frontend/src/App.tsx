@@ -6,6 +6,7 @@ const API_BASE = import.meta.env.VITE_API_URL
     : '');
 
 const LLM_PROVIDERS: Record<string, { label: string; keyLabel: string; models: string[]; placeholder: string; link: string }> = {
+  nvidia: { label: 'NVIDIA (free)', keyLabel: 'NVIDIA_API_KEY', models: ['meta/llama-3.3-70b-instruct', 'meta/llama-3.1-8b-instruct', 'nvidia/llama-3.1-nemotron-70b-instruct', 'deepseek-ai/deepseek-r1'], placeholder: 'nvapi-…', link: 'https://build.nvidia.com' },
   groq: { label: 'Groq', keyLabel: 'GROQ_API_KEY', models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'], placeholder: 'gsk_…', link: 'https://console.groq.com/keys' },
   gemini: { label: 'Google Gemini', keyLabel: 'GEMINI_API_KEY', models: ['gemini-2.0-flash', 'gemini-1.5-pro'], placeholder: 'AIza…', link: 'https://aistudio.google.com/app/apikey' },
   openai: { label: 'OpenAI', keyLabel: 'OPENAI_API_KEY', models: ['gpt-4o-mini', 'gpt-4o'], placeholder: 'sk-…', link: 'https://platform.openai.com/api-keys' },
@@ -121,7 +122,7 @@ function AnswerCard({ answer, onFollowup }: { answer: AnswerResponse; onFollowup
 }
 
 function SettingsModal({ onClose }: { onClose: () => void }) {
-  const [provider, setProvider] = usePersist('provider', 'groq');
+  const [provider, setProvider] = usePersist('provider', 'nvidia');
   const [apiKey, setApiKey] = usePersist('apiKey', '');
   const [model, setModel] = usePersist('model', '');
   const [redditId, setRedditId] = usePersist('redditClientId', '');
@@ -156,19 +157,19 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
                  value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
 
           <hr className="divider" />
-          <div className="field-label">Reddit API — required for real, live answers</div>
+          <div className="field-label">Reddit API — optional (improves reliability)</div>
           <p className="field-hint">
-            Create a free “script” app at <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noopener noreferrer">reddit.com/prefs/apps</a> (redirect URI <code>http://localhost:8080</code>), then paste its client ID &amp; secret. Without these, answers stay in demo mode.
+            Answers work without this by reading public Reddit directly. Adding a free “script” app from <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noopener noreferrer">reddit.com/prefs/apps</a> (redirect URI <code>http://localhost:8080</code>) makes retrieval faster and more reliable, especially under load.
           </p>
-          <input className="input" type="text" autoComplete="off" placeholder="Reddit client ID"
+          <input className="input" type="text" autoComplete="off" placeholder="Reddit client ID (optional)"
                  value={redditId} onChange={(e) => setRedditId(e.target.value)} />
-          <input className="input" type="password" autoComplete="off" placeholder="Reddit client secret"
+          <input className="input" type="password" autoComplete="off" placeholder="Reddit client secret (optional)"
                  value={redditSecret} onChange={(e) => setRedditSecret(e.target.value)} />
 
-          {apiKey && redditId && redditSecret ? (
-            <div className="status-line ok"><span>✓</span><span>Fully live — real Reddit answers powered by <strong>{p.label}</strong>.</span></div>
+          {apiKey ? (
+            <div className="status-line ok"><span>✓</span><span>Live — answering from real Reddit via <strong>{p.label}</strong>{redditId && redditSecret ? ' (using your Reddit API for reliability)' : ' (public Reddit, best-effort)'}.</span></div>
           ) : (
-            <div className="status-line warn"><span>⚠</span><span>{!apiKey ? 'Add an AI key' : 'Add Reddit credentials'} to leave demo mode. Demo mode returns clearly-labelled sample answers for a few topics.</span></div>
+            <div className="status-line warn"><span>⚠</span><span>Add an AI key to go live. Without one, answers use clearly-labelled demo data for a few topics.</span></div>
           )}
           <div className="links">
             <a href={p.link} target="_blank" rel="noopener noreferrer">Get {p.label} key ↗</a>
@@ -415,7 +416,7 @@ export default function App() {
               </button>
             </div>
             <div className="composer-hint">
-              {isDemo ? 'Demo mode — add AI + Reddit keys in Settings for real, live answers.' : 'Answers are grounded only in real Reddit discussion.'}
+              {isDemo ? 'Demo mode — add an AI key in Settings for real, live Reddit answers.' : 'Answers are grounded only in real Reddit discussion.'}
             </div>
           </div>
         </div>

@@ -21,6 +21,23 @@ def test_claude_alias_maps_to_anthropic():
     assert client.provider == "anthropic"
 
 
+def test_nvidia_provider_configures_openai_compatible_client():
+    client = LLMClient(provider="nvidia", api_key="nvapi-fake")
+    assert client.active is True
+    assert client.provider == "nvidia"
+    assert client.model.startswith("meta/") or "/" in client.model
+    # NVIDIA is OpenAI-compatible but not in the json_object allowlist.
+    from llm import JSON_MODE_PROVIDERS
+    assert "nvidia" not in JSON_MODE_PROVIDERS
+
+
+def test_nvidia_env_key_fallback(monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-fake-env")
+    client = LLMClient()
+    assert client.active is True
+    assert client.provider == "nvidia"
+
+
 def test_env_key_fallback(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "fake-env-key")
     client = LLMClient()

@@ -1,100 +1,62 @@
 """Reddit retrieval — the ONLY grounding source for the engine.
 
-Primary path: the official Reddit Data API via PRAW in application-only
-(client_credentials) read-only mode — client_id + client_secret only, no
-username/password. This is the only path trusted for live grounding; anonymous
-`.json` is blocked (HTTP 403) from servers and kept solely as a local-dev
-best-effort fallback.
+Two paths, chosen automatically:
+
+1. **No credentials (default).** A polite, low-volume scraper: Reddit's public
+   `search.rss` for thread discovery + `old.reddit.com` HTML for comments. These
+   endpoints still respond (200) to unauthenticated clients, unlike the JSON API
+   (now 403). Best-effort: rate-limited and may be blocked from some datacenter
+   IPs, so requests are spaced out, cached, and retried with backoff.
+
+2. **Official Reddit API (optional upgrade).** If REDDIT_CLIENT_ID/SECRET are set
+   (env or bring-your-own), PRAW app-only read-only mode is used instead — more
+   reliable and higher-volume.
 
 Every call returns a RetrievalResult carrying a STATUS so the pipeline can tell
-apart genuine zero-coverage ("empty") from an unreachable API ("error") or
-missing credentials ("no_credentials"). That distinction is what lets the engine
-refuse honestly instead of pretending Reddit had nothing.
+apart genuine zero-coverage ("empty") from an unreachable Reddit ("error").
 """
 
-import json
+import html
 import logging
 import os
+import re
 import time
-import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
+
+try:
+    import requests
+except ImportError:  # requests is a hard dependency; guard only for safety
+    requests = None
 
 logger = logging.getLogger(__name__)
 
 RetrievalStatus = Literal["ok", "empty", "error", "no_credentials", "demo"]
 
-BROWSER_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
+SCRAPE_UA = "web:com.portfolio.redditanswers:v3.0.0 (by /u/reddit_answer_engine)"
+REQUEST_DELAY = 1.3   # seconds between scrape requests (politeness / rate limits)
+_url_cache: Dict[str, Optional[str]] = {}   # per-process HTML/RSS cache
 
 
 @dataclass
 class RetrievalResult:
     status: RetrievalStatus
     comments: List[Dict[str, Any]] = field(default_factory=list)
-    # query -> [comment_id, ...] in rank order, so ranking can compute RRF.
     per_query_rank: Dict[str, List[str]] = field(default_factory=dict)
 
 
-def _local_dev() -> bool:
-    """True when anon .json discovery is explicitly allowed (dev machines)."""
-    return os.environ.get("ALLOW_ANON_REDDIT", "").lower() in ("1", "true", "yes")
+def _user_agent() -> str:
+    return os.environ.get("REDDIT_USER_AGENT", SCRAPE_UA)
 
 
-def _default_user_agent() -> str:
-    return os.environ.get(
-        "REDDIT_USER_AGENT",
-        "server:com.portfolio.redditanswers:v3.0.0 (by /u/reddit_answer_engine)",
-    )
-
-
-def build_reddit(reddit_creds: Optional[Dict[str, str]] = None):
-    """Create an app-only, read-only PRAW client, or return None if no creds.
-
-    Passing only client_id + client_secret makes PRAW use the client_credentials
-    grant, so reddit.read_only is True and no user account is involved.
-    Bring-your-own creds (from the request body) take precedence over env vars.
-    """
-    creds = reddit_creds or {}
-    client_id = creds.get("client_id") or os.environ.get("REDDIT_CLIENT_ID")
-    client_secret = creds.get("client_secret") or os.environ.get("REDDIT_CLIENT_SECRET")
-    if not client_id or not client_secret:
-        return None
-    try:
-        import praw
-
-        reddit = praw.Reddit(
-            client_id=client_id,
-            client_secret=client_secret,
-            user_agent=_default_user_agent(),
-            ratelimit_seconds=300,  # let PRAW self-throttle within the free tier
-            check_for_updates=False,
-        )
-        reddit.read_only = True
-        return reddit
-    except Exception as exc:
-        logger.warning("Could not initialise PRAW client: %s", exc)
-        return None
-
-
-def _normalize_comment(
-    comment_id: str,
-    post_title: str,
-    post_url: str,
-    comment_permalink: str,
-    subreddit: str,
-    author: Optional[str],
-    ups: int,
-    body: str,
-    created_utc: float,
-) -> Optional[Dict[str, Any]]:
+def _normalize_comment(comment_id, post_title, post_url, comment_permalink,
+                       subreddit, author, ups, body, created_utc) -> Optional[Dict[str, Any]]:
     body = (body or "").strip()
     if not body or body in ("[deleted]", "[removed]"):
         return None
     return {
-        "comment_id": comment_id,
+        "comment_id": comment_id or f"t1_{abs(hash(body)) % 10**10}",
         "post_title": post_title or "",
         "post_url": post_url or "",
         "comment_permalink": comment_permalink or post_url or "",
@@ -106,189 +68,242 @@ def _normalize_comment(
     }
 
 
-def _collect_comments_from_submission(submission, comments_per_post: int) -> List[Dict[str, Any]]:
-    """Fetch the top comments of one submission (cheap: replace_more(limit=0))."""
-    out: List[Dict[str, Any]] = []
+# ======================================================================= API path
+
+def build_reddit(reddit_creds: Optional[Dict[str, str]] = None):
+    """App-only read-only PRAW client, or None when no credentials are configured."""
+    creds = reddit_creds or {}
+    client_id = creds.get("client_id") or os.environ.get("REDDIT_CLIENT_ID")
+    client_secret = creds.get("client_secret") or os.environ.get("REDDIT_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return None
     try:
-        submission.comment_sort = "top"
-        submission.comments.replace_more(limit=0)  # drop 'load more' stubs, no extra requests
-        for c in submission.comments.list()[:comments_per_post]:
-            permalink = f"https://www.reddit.com{getattr(c, 'permalink', '')}"
-            author = getattr(c.author, "name", None) if getattr(c, "author", None) else None
-            norm = _normalize_comment(
-                comment_id=f"t1_{c.id}",
-                post_title=submission.title,
-                post_url=f"https://www.reddit.com{submission.permalink}",
-                comment_permalink=permalink,
-                subreddit=str(submission.subreddit),
-                author=author,
-                ups=getattr(c, "score", 0),
-                body=getattr(c, "body", ""),
-                created_utc=getattr(c, "created_utc", 0.0),
-            )
-            if norm:
-                out.append(norm)
+        import praw
+
+        reddit = praw.Reddit(client_id=client_id, client_secret=client_secret,
+                             user_agent=_user_agent(), ratelimit_seconds=300, check_for_updates=False)
+        reddit.read_only = True
+        return reddit
     except Exception as exc:
-        logger.warning("Comment fetch failed for %s: %s", getattr(submission, "id", "?"), exc)
-    return out
+        logger.warning("Could not initialise PRAW client: %s", exc)
+        return None
 
 
-def search_reddit(
-    plan,
-    reddit_creds: Optional[Dict[str, str]] = None,
-    posts_per_query: int = 12,
-    top_posts: int = 10,
-    comments_per_post: int = 6,
-) -> RetrievalResult:
-    """Search real Reddit for the plan's queries and collect top comments.
-
-    Returns a RetrievalResult whose status distinguishes real zero-coverage from
-    errors and missing credentials.
-    """
-    reddit = build_reddit(reddit_creds)
-    if reddit is None:
-        if _local_dev():
-            return _anon_json_fallback(plan)
-        return RetrievalResult("no_credentials")
-
+def _search_reddit_api(reddit, plan, posts_per_query, top_posts, comments_per_post) -> RetrievalResult:
     scope = "+".join(plan.subreddits) if plan.subreddits else "all"
     try:
         sub = reddit.subreddit(scope)
-    except Exception as exc:
-        logger.warning("Bad subreddit scope '%s': %s — falling back to r/all", scope, exc)
+    except Exception:
         sub = reddit.subreddit("all")
 
-    queries = plan.search_queries or [plan.standalone_question]
-    submissions_by_id: Dict[str, Any] = {}
+    submissions: Dict[str, Any] = {}
     per_query_post_rank: Dict[str, List[str]] = {}
     hit_error = False
-
-    for q in queries:
+    for q in (plan.search_queries or [plan.standalone_question]):
         if not q:
             continue
         order: List[str] = []
         for attempt in range(3):
             try:
                 for post in sub.search(q, sort="relevance", time_filter="all", limit=posts_per_query):
-                    submissions_by_id.setdefault(post.id, post)
+                    submissions.setdefault(post.id, post)
                     order.append(f"t3_{post.id}")
                 break
             except Exception as exc:
-                # 403/429 from datacenter IPs, transient network, etc.
-                logger.warning("search '%s' attempt %d failed: %s", q, attempt + 1, exc)
+                logger.warning("API search '%s' attempt %d failed: %s", q, attempt + 1, exc)
                 hit_error = True
-                time.sleep(2 * (attempt + 1))  # exponential-ish backoff
+                time.sleep(2 * (attempt + 1))
         per_query_post_rank[q] = order
 
-    # Rank posts by score, keep the strongest, then fetch their top comments.
-    ranked_posts = sorted(
-        submissions_by_id.values(), key=lambda p: getattr(p, "score", 0), reverse=True
-    )[:top_posts]
-
-    post_to_comment_ids: Dict[str, List[str]] = {}
+    ranked = sorted(submissions.values(), key=lambda p: getattr(p, "score", 0), reverse=True)[:top_posts]
+    post_to_cids: Dict[str, List[str]] = {}
     comments: List[Dict[str, Any]] = []
-    for post in ranked_posts:
-        post_comments = _collect_comments_from_submission(post, comments_per_post)
-        post_to_comment_ids[f"t3_{post.id}"] = [c["comment_id"] for c in post_comments]
-        comments.extend(post_comments)
+    for post in ranked:
+        cs: List[Dict[str, Any]] = []
+        try:
+            post.comment_sort = "top"
+            post.comments.replace_more(limit=0)
+            for c in post.comments.list()[:comments_per_post]:
+                author = getattr(c.author, "name", None) if getattr(c, "author", None) else None
+                norm = _normalize_comment(f"t1_{c.id}", post.title,
+                                          f"https://www.reddit.com{post.permalink}",
+                                          f"https://www.reddit.com{getattr(c, 'permalink', '')}",
+                                          str(post.subreddit), author, getattr(c, "score", 0),
+                                          getattr(c, "body", ""), getattr(c, "created_utc", 0.0))
+                if norm:
+                    cs.append(norm)
+        except Exception as exc:
+            logger.warning("API comment fetch failed: %s", exc)
+        post_to_cids[f"t3_{post.id}"] = [c["comment_id"] for c in cs]
+        comments.extend(cs)
 
-    # Rewrite per-query provenance from post ids to the comment ids we kept, so
-    # ranking's RRF rewards comments from posts surfaced by multiple queries.
-    per_query_rank: Dict[str, List[str]] = {}
-    for q, post_ids in per_query_post_rank.items():
-        cids: List[str] = []
-        for pid in post_ids:
-            cids.extend(post_to_comment_ids.get(pid, []))
-        per_query_rank[q] = cids
-
+    per_query_rank = {q: [cid for pid in pids for cid in post_to_cids.get(pid, [])]
+                      for q, pids in per_query_post_rank.items()}
     if comments:
         return RetrievalResult("ok", comments, per_query_rank)
-    if hit_error:
-        return RetrievalResult("error")  # unreachable / rate-limited — NOT "no coverage"
-    return RetrievalResult("empty")  # genuine zero coverage
+    return RetrievalResult("error" if hit_error else "empty")
 
 
-# ------------------------------------------------------------ local-dev anon fallback
+# ==================================================================== scrape path
 
-def fetch_json_from_url(url: str) -> Any:
-    """Fetch a Reddit thread's JSON (local dev only; 403s from servers)."""
-    clean = url.split("?")[0]
-    if not clean.endswith(".json"):
-        clean = clean.rstrip("/") + ".json"
-    req = urllib.request.Request(clean, headers={"User-Agent": BROWSER_UA})
-    try:
-        with urllib.request.urlopen(req, timeout=6) as response:
-            if response.status == 200:
-                return json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        logger.warning("Anon JSON fetch failed for %s: %s", clean, exc)
-    return None
-
-
-def extract_comments_from_json(reddit_json: Any) -> List[Dict[str, Any]]:
-    """Parse comments from a Reddit thread .json payload into normalized dicts."""
-    out: List[Dict[str, Any]] = []
-    if not reddit_json or len(reddit_json) < 2:
-        return out
-    try:
-        post = reddit_json[0]["data"]["children"][0]["data"]
-        title = post.get("title", "")
-        post_url = f"https://www.reddit.com{post.get('permalink', '')}"
-        subreddit = post.get("subreddit", "")
-    except Exception:
-        title, post_url, subreddit = "", "", ""
-    try:
-        for child in reddit_json[1]["data"]["children"]:
-            if child.get("kind") != "t1":
-                continue
-            d = child.get("data", {})
-            norm = _normalize_comment(
-                comment_id=f"t1_{d.get('id', '')}",
-                post_title=title,
-                post_url=post_url,
-                comment_permalink=f"https://www.reddit.com{d.get('permalink', '')}",
-                subreddit=subreddit or d.get("subreddit", ""),
-                author=d.get("author"),
-                ups=d.get("ups", 0),
-                body=d.get("body", ""),
-                created_utc=d.get("created_utc", 0.0),
-            )
-            if norm:
-                out.append(norm)
-    except Exception as exc:
-        logger.warning("Error parsing anon comments: %s", exc)
-    return out
-
-
-def _anon_json_fallback(plan) -> RetrievalResult:
-    """Best-effort, local-dev-only: discover threads then read their real .json.
-
-    DuckDuckGo is used only to DISCOVER thread URLs; grounding is always on the
-    fetched comment JSON, never on search snippets. Gated behind ALLOW_ANON_REDDIT.
-    """
-    try:
-        from duckduckgo_search import DDGS
-    except Exception:
-        return RetrievalResult("no_credentials")
-
-    comments: List[Dict[str, Any]] = []
-    per_query_rank: Dict[str, List[str]] = {}
-    queries = plan.search_queries or [plan.standalone_question]
-    for q in queries[:3]:
-        order: List[str] = []
+def _http_get(url: str) -> Optional[str]:
+    """Polite GET with UA, caching, and one 429 backoff. Returns text or None."""
+    if url in _url_cache:
+        return _url_cache[url]
+    if requests is None:
+        return None
+    text = None
+    for attempt in range(2):
         try:
-            with DDGS() as ddgs:
-                for r in ddgs.text(f"site:reddit.com {q}", max_results=4):
-                    url = r.get("href", "")
-                    if "/comments/" not in url:
-                        continue
-                    for c in extract_comments_from_json(fetch_json_from_url(url)):
-                        comments.append(c)
-                        order.append(c["comment_id"])
+            resp = requests.get(url, headers={"User-Agent": _user_agent()}, timeout=10)
+            if resp.status_code == 200:
+                text = resp.text
+                break
+            if resp.status_code == 429:
+                time.sleep(2.5 * (attempt + 1))
+                continue
+            logger.warning("scrape GET %s -> HTTP %s", url, resp.status_code)
+            break
         except Exception as exc:
-            logger.warning("Anon fallback query '%s' failed: %s", q, exc)
-        per_query_rank[q] = order
+            logger.warning("scrape GET %s failed: %s", url, exc)
+            break
+    _url_cache[url] = text
+    return text
 
+
+def _search_rss(query: str, subreddits: Optional[List[str]] = None, limit: int = 10) -> List[Dict[str, str]]:
+    """Discover thread permalinks via Reddit's public search.rss (200 unauthenticated).
+
+    Restricts to the plan's subreddits when provided (much better relevance),
+    else searches all of Reddit.
+    """
+    from urllib.parse import quote
+
+    if subreddits:
+        scope = "+".join(subreddits[:3])
+        url = f"https://www.reddit.com/r/{scope}/search.rss?q={quote(query)}&restrict_sr=1&sort=relevance&limit={limit}"
+    else:
+        url = f"https://www.reddit.com/search.rss?q={quote(query)}&sort=relevance&limit={limit}"
+    xml = _http_get(url)
+    if not xml:
+        return []
+    threads: List[Dict[str, str]] = []
+    try:
+        root = ET.fromstring(xml)
+        ns = {"a": "http://www.w3.org/2005/Atom"}
+        for entry in root.findall(".//a:entry", ns):
+            link_el = entry.find("a:link", ns)
+            title_el = entry.find("a:title", ns)
+            link = link_el.get("href") if link_el is not None else ""
+            if "/comments/" not in link:
+                continue
+            sub = re.search(r"/r/([A-Za-z0-9_]+)/", link)
+            threads.append({"permalink": link, "title": (title_el.text if title_el is not None else "") or "",
+                            "subreddit": sub.group(1) if sub else ""})
+    except ET.ParseError as exc:
+        logger.warning("search.rss parse error for '%s': %s", query, exc)
+    return threads
+
+
+_COMMENT_CHUNK_RE = re.compile(r'(?=<div [^>]*data-type="comment")')
+_AUTHOR_RE = re.compile(r'data-author="([^"]+)"')
+_PERMALINK_RE = re.compile(r'data-permalink="([^"]+)"')
+_SCORE_RE = re.compile(r'<span class="score unvoted"[^>]*title="(-?\d+)"')
+_MD_RE = re.compile(r'<div class="md">(.*?)</div>\s*</div>', re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _scrape_thread_comments(permalink: str, title: str, subreddit: str, limit: int) -> List[Dict[str, Any]]:
+    """Scrape top comments from an old.reddit.com thread page (200 unauthenticated)."""
+    path = permalink.replace("https://www.reddit.com", "").replace("https://old.reddit.com", "")
+    html_text = _http_get(f"https://old.reddit.com{path}?limit=50&sort=top")
+    if not html_text:
+        return []
+    out: List[Dict[str, Any]] = []
+    for chunk in _COMMENT_CHUNK_RE.split(html_text)[1:]:
+        author_m = _AUTHOR_RE.search(chunk)
+        body_m = _MD_RE.search(chunk)
+        if not author_m or not body_m:
+            continue
+        body = " ".join(_TAG_RE.sub("", html.unescape(body_m.group(1))).split())
+        score_m = _SCORE_RE.search(chunk)
+        perma_m = _PERMALINK_RE.search(chunk)
+        cid = ""
+        if perma_m:
+            tail = perma_m.group(1).rstrip("/").rsplit("/", 1)[-1]
+            cid = f"t1_{tail}"
+        norm = _normalize_comment(cid, title,
+                                  f"https://www.reddit.com{path}",
+                                  f"https://www.reddit.com{perma_m.group(1)}" if perma_m else f"https://www.reddit.com{path}",
+                                  subreddit, author_m.group(1), score_m.group(1) if score_m else 0,
+                                  body, 0.0)
+        if norm:
+            out.append(norm)
+    # keep highest-scored comments from this thread
+    out.sort(key=lambda c: c["ups"], reverse=True)
+    return out[:limit]
+
+
+def _search_reddit_scrape(plan, top_threads=6, comments_per_thread=6) -> RetrievalResult:
+    """No-credential retrieval: search.rss discovery + old.reddit comment scraping."""
+    if requests is None:
+        return RetrievalResult("error")
+
+    queries = (plan.search_queries or [plan.standalone_question])[:4]
+    threads: Dict[str, Dict[str, str]] = {}
+    per_query_threads: Dict[str, List[str]] = {}
+    any_response = False
+    for i, q in enumerate(queries):
+        if not q:
+            continue
+        # First query also searches all of Reddit (broadens beyond the guessed
+        # subreddits); the rest stay subreddit-restricted for precision.
+        found = _search_rss(q, plan.subreddits)
+        if i == 0 and plan.subreddits:
+            found = found + _search_rss(q, None)
+            time.sleep(REQUEST_DELAY)
+        if found:
+            any_response = True
+        order = []
+        for t in found:
+            threads.setdefault(t["permalink"], t)
+            order.append(t["permalink"])
+        per_query_threads[q] = order
+        time.sleep(REQUEST_DELAY)
+
+    if not threads:
+        # Discovery produced nothing: distinguish "reddit unreachable" from "no results".
+        return RetrievalResult("error" if not any_response else "empty")
+
+    # Fetch comments for the most-referenced threads first.
+    thread_freq: Dict[str, int] = {}
+    for order in per_query_threads.values():
+        for p in order:
+            thread_freq[p] = thread_freq.get(p, 0) + 1
+    ordered_threads = sorted(threads.values(), key=lambda t: thread_freq.get(t["permalink"], 0), reverse=True)[:top_threads]
+
+    thread_to_cids: Dict[str, List[str]] = {}
+    comments: List[Dict[str, Any]] = []
+    for t in ordered_threads:
+        cs = _scrape_thread_comments(t["permalink"], t["title"], t["subreddit"], comments_per_thread)
+        thread_to_cids[t["permalink"]] = [c["comment_id"] for c in cs]
+        comments.extend(cs)
+        time.sleep(REQUEST_DELAY)
+
+    per_query_rank = {q: [cid for p in order for cid in thread_to_cids.get(p, [])]
+                      for q, order in per_query_threads.items()}
     if comments:
         return RetrievalResult("ok", comments, per_query_rank)
     return RetrievalResult("empty")
+
+
+# ====================================================================== dispatch
+
+def search_reddit(plan, reddit_creds: Optional[Dict[str, str]] = None,
+                  posts_per_query: int = 12, top_posts: int = 10, comments_per_post: int = 6) -> RetrievalResult:
+    """Retrieve real Reddit comments for the plan. Uses the official API when
+    credentials exist, otherwise the no-credential scraper."""
+    reddit = build_reddit(reddit_creds)
+    if reddit is not None:
+        return _search_reddit_api(reddit, plan, posts_per_query, top_posts, comments_per_post)
+    return _search_reddit_scrape(plan)

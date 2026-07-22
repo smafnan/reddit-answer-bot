@@ -44,17 +44,13 @@ Scraped comment text is always wrapped as untrusted data in prompts, so a commen
 
 ---
 
-## Reddit access (required for real answers)
+## What you need to run it
 
-Anonymous Reddit access is blocked (HTTP 403) from servers, so real answers need free Reddit API credentials:
+**One LLM key. That's it.** Set any of NVIDIA (free, OpenAI-compatible), Groq, Gemini, OpenAI, or Anthropic — in `backend/.env` or pasted into the app's Settings (sent only in the POST body). Without a key the engine runs in clearly-labelled **demo mode** (sample answers for a few topics, honest refusals otherwise — it never fabricates sources).
 
-1. Visit **[reddit.com/prefs/apps](https://www.reddit.com/prefs/apps)** → *create app* → type **script**, redirect URI `http://localhost:8080`.
-2. Copy the **client ID** (under the app name) and **secret**.
-3. Put them in `backend/.env` (`REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET`) — or paste them in the app's Settings (bring-your-own, sent only in the POST body).
+**Reddit access needs no credentials by default.** The engine reads public Reddit directly — `search.rss` for thread discovery and `old.reddit.com` for comments, both of which still respond to unauthenticated clients (the JSON API is 403'd). This path is polite and low-volume (spaced requests, caching, backoff) and is best-effort: it can be rate-limited under load, and some datacenter IPs are blocked by Reddit.
 
-Without credentials the engine runs in **demo mode**: clearly-labelled sample answers for a few topics, and honest refusals for everything else. It never fabricates Reddit sources.
-
-> Note: even with valid credentials, Reddit sometimes rate-limits datacenter IPs. The client retries with backoff; if a host's IP is flagged, run the backend somewhere with a cleaner egress IP.
+**Optional upgrade:** add a free Reddit "script" app ([reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) → type **script**, redirect URI `http://localhost:8080`) as `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` (or in Settings). When present, retrieval uses the official Reddit API (PRAW, read-only) — faster, higher-volume, and more reliable, especially on cloud hosts.
 
 ---
 
@@ -65,7 +61,7 @@ Without credentials the engine runs in **demo mode**: clearly-labelled sample an
 cd backend
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.template .env      # add REDDIT_CLIENT_ID/SECRET and an LLM key (Groq/Gemini/OpenAI/Anthropic)
+cp .env.template .env      # add one LLM key (NVIDIA free / Groq / Gemini / OpenAI / Anthropic)
 python main.py             # http://localhost:8000
 ```
 
@@ -108,7 +104,7 @@ Secrets travel in the POST body only. Endpoints are rate-limited per IP.
 
 ## Tech stack
 
-**Backend** — FastAPI · LangGraph · PRAW (official Reddit API, read-only) · Groq / Gemini / OpenAI / Anthropic · Pydantic-validated structured outputs · deterministic ranking & citation validation (no vector DB, no heavy deps)
+**Backend** — FastAPI · LangGraph · public Reddit retrieval (search.rss + old.reddit) with optional official API (PRAW, read-only) · NVIDIA / Groq / Gemini / OpenAI / Anthropic · Pydantic-validated structured outputs · deterministic ranking & citation validation (no vector DB, no heavy deps)
 
 **Frontend** — React 19 + TypeScript · Vite · streaming chat UI with citation chips, source cards, honest-refusal cards, and follow-ups · dark/light themes
 

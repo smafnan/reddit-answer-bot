@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Environment fallback order when neither an explicit key nor provider is given.
 ENV_KEY_ORDER = [
     ("groq", "GROQ_API_KEY"),
+    ("nvidia", "NVIDIA_API_KEY"),
     ("gemini", "GEMINI_API_KEY"),
     ("openai", "OPENAI_API_KEY"),
     ("anthropic", "ANTHROPIC_API_KEY"),
@@ -30,10 +31,18 @@ ENV_KEY_BY_PROVIDER = {provider: env for provider, env in ENV_KEY_ORDER}
 
 DEFAULT_MODELS = {
     "groq": "llama-3.1-8b-instant",
+    "nvidia": "meta/llama-3.3-70b-instruct",
     "gemini": "gemini-2.0-flash",
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5-20251001",
 }
+
+# NVIDIA's free API is OpenAI-compatible.
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+# Providers whose OpenAI-compatible endpoint reliably supports JSON mode. Others
+# (NVIDIA, unknown gateways) rely on the schema-in-prompt + _extract_json path.
+JSON_MODE_PROVIDERS = {"groq", "openai"}
 
 # Prepended to every system prompt: scraped Reddit content is data, not
 # instructions. Agents wrap that content in <untrusted> tags.
@@ -116,6 +125,10 @@ class LLMClient:
             from openai import OpenAI
 
             self._client = OpenAI(api_key=api_key)
+        elif provider == "nvidia":
+            from openai import OpenAI
+
+            self._client = OpenAI(api_key=api_key, base_url=NVIDIA_BASE_URL)
         elif provider == "anthropic":
             from anthropic import Anthropic
 
@@ -181,7 +194,7 @@ class LLMClient:
             ],
             "temperature": 0.3,
         }
-        if response_schema:
+        if response_schema and self.provider in JSON_MODE_PROVIDERS:
             kwargs["response_format"] = {"type": "json_object"}
         response = self._client.chat.completions.create(**kwargs)
         return response.choices[0].message.content
